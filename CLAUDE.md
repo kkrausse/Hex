@@ -2,6 +2,65 @@
 
 This file provides guidance for coding agents working in this repo.
 
+## ⚠️ This is a fork: kkrausse/hex, branch `streaming`
+
+Upstream is `kitlangton/Hex` (remote `upstream`). The goal of the fork is to add
+**live streaming dictation** — text pasted incrementally as you speak — on top of
+Hex's UI, settings, and word remappings. Upstream is batch-only: record, release,
+transcribe once, paste once.
+
+Key facts established before any code was written:
+
+- Upstream already pins **FluidAudio 0.15.5** exactly (`Hex.xcodeproj/project.pbxproj`),
+  and `StreamingUnifiedAsrManager`, the `StreamingAsrManager` protocol, and
+  `StreamingModelVariant` are all **already public at that version**. Streaming needs
+  **no dependency change** — upstream simply never calls that API, using only the
+  batch `AsrManager.transcribe(url:)` path in `Hex/Clients/ParakeetClient.swift`.
+- `SuperFastCaptureController.process()` already converts every tap buffer to
+  **16 kHz mono Float32** via `AVAudioConverter` — exactly the format the streaming
+  manager wants. The sample hook goes there, right after `convert()`, and must
+  respect `captureGeneration` and `processingQueue`.
+- The reference implementation is the sibling repo `../dictate-wrapper`, which runs
+  this same model streaming today. Reusable pieces: `FluidStreamingPipeline`,
+  `AppendOnlyTranscriptCursor`, `AudioBufferBridge`, `ClipboardPreserver`.
+
+### Fork divergence so far
+
+- **Sparkle is disabled on purpose.** `SUFeedURL` is removed from `Hex/Info.plist`
+  and `CheckForUpdatesView` constructs the controller with `startingUpdater: false`.
+  Leaving the upstream feed in place would let this build auto-update itself back to
+  an upstream release and silently discard the fork. Both changes must stay together:
+  starting the updater with no feed throws `SUNoFeedURLError` and alerts on launch.
+- **`StreamingTextTransformer`** (`HexCore/Sources/HexCore/Logic/`) applies word
+  remappings to an incrementally-arriving transcript. See its doc comment for why the
+  release boundary is whitespace and not the delta.
+
+### V1 scope (deliberately minimal)
+
+In: streaming via `parakeetUnified1120ms` (hardcoded), delta paste, remappings through
+`StreamingTextTransformer`, Sparkle off. Out: settings UI, latency-tier picker,
+streaming on/off toggle, multi-word remapping lookahead. **The batch path stays fully
+intact** — streaming is added beside it, never replacing it, so upstream merges stay cheap.
+
+### Build constraint
+
+This machine has **Command Line Tools only, no Xcode**, so `xcodebuild -scheme Hex`
+cannot run and the app cannot be built or launched here yet. `HexCore` is a standalone
+SPM package and is the only part of the fork with a working test loop. Put logic there
+whenever it can reasonably live there.
+
+**Run HexCore tests with `./HexCore/run-tests.sh`, not `swift test`.** Under CLT, Swift
+Testing is installed but off the default search paths, and a plain `swift test` fails in
+three stages: no such module `Testing`, then a dyld miss on `Testing.framework`, then a
+dyld miss on `lib_TestingInterop.dylib` (which lives in a different directory than the
+framework). `DYLD_FRAMEWORK_PATH` cannot fix it — SIP strips `DYLD_*` from
+`swiftpm-testing-helper`. The script bakes both rpaths in at link time. Note this
+affects any SPM package on this machine, not just this fork.
+
+`HexSettingsMigrationTests.swift` was ported from XCTest to Swift Testing because XCTest
+ships only with full Xcode, and that single file was enough to stop the entire test
+target from compiling. Keep new tests on Swift Testing.
+
 ## Project Overview
 
 Hex is a macOS menu bar application for on‑device voice‑to‑text. It supports Whisper (Core ML via WhisperKit) and Parakeet TDT v3 (Core ML via FluidAudio). Users activate transcription with hotkeys; text can be auto‑pasted into the active app.
