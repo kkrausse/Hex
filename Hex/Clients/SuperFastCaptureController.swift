@@ -106,6 +106,14 @@ final class SuperFastCaptureController {
   private let logger = HexLog.recording
   private let processingQueue = DispatchQueue(label: "com.kitlangton.Hex.SuperFastCapture")
   private let meterContinuation: AsyncStream<Meter>.Continuation
+  /// Live 16 kHz mono Float32 capture, for streaming ASR.
+  ///
+  /// Buffers are emitted from the same post-conversion point that feeds the
+  /// recording file, so the streaming transcript and the saved audio see
+  /// byte-identical samples. Yielding happens on `processingQueue` under the
+  /// same `captureGeneration` guard as everything else in `process`, so a
+  /// stale engine's in-flight callbacks cannot leak into a new session.
+  private let samplesContinuation: AsyncStream<[Float]>.Continuation
   private let ringBuffer = FloatRingBuffer(
     capacity: Int(SuperFastCaptureConstants.sampleRate * SuperFastCaptureConstants.ringBufferDuration)
   )
@@ -130,9 +138,11 @@ final class SuperFastCaptureController {
 
   init(
     meterContinuation: AsyncStream<Meter>.Continuation,
+    samplesContinuation: AsyncStream<[Float]>.Continuation,
     onEngineConfigurationChange: @escaping @Sendable (Int) -> Void
   ) {
     self.meterContinuation = meterContinuation
+    self.samplesContinuation = samplesContinuation
     self.onEngineConfigurationChange = onEngineConfigurationChange
   }
 
@@ -401,6 +411,9 @@ final class SuperFastCaptureController {
 
     if activeRecording != nil {
       meterContinuation.yield(meter(for: samples, count: sampleCount))
+      // Copied out of the CoreAudio-owned buffer: the pointer is only valid for
+      // the duration of this call, while the consumer is asynchronous.
+      samplesContinuation.yield(Array(UnsafeBufferPointer(start: samples, count: sampleCount)))
     }
 
     guard var recording = activeRecording else { return }
