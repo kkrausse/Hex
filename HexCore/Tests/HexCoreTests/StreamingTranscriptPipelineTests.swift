@@ -24,10 +24,12 @@ struct StreamingTranscriptPipelineTests {
 
 		// The first word is held: nothing yet proves the decoder is done with it.
 		#expect(pipeline.observe("hello", transform: Self.identity).textToInsert == "")
-		#expect(pipeline.observe("hello there", transform: Self.identity).textToInsert == "hello ")
-		#expect(pipeline.pendingText == "there")
+		#expect(pipeline.observe("hello there", transform: Self.identity).textToInsert == "hello")
+		#expect(pipeline.pendingText == " there")
 
-		#expect(pipeline.finish("hello there", transform: Self.identity).textToInsert == "there")
+		// The separator travels with the word it precedes, so the tail arrives as
+		// " there" — the concatenation is unchanged.
+		#expect(pipeline.finish("hello there", transform: Self.identity).textToInsert == " there")
 		#expect(pipeline.insertedText == "hello there")
 	}
 
@@ -66,7 +68,7 @@ struct StreamingTranscriptPipelineTests {
 		_ = pipeline.observe("hello there", transform: Self.identity)
 
 		let outcome = pipeline.finish("hello there world", transform: Self.identity)
-		#expect(outcome.textToInsert == "there world")
+		#expect(outcome.textToInsert == " there world")
 		#expect(pipeline.insertedText == "hello there world")
 	}
 
@@ -80,7 +82,7 @@ struct StreamingTranscriptPipelineTests {
 		let outcome = pipeline.observe("goodbye there", transform: Self.identity)
 		#expect(outcome.textToInsert == "")
 		#expect(outcome.divergenceDiagnostic != nil)
-		#expect(pipeline.insertedText == "hello ")
+		#expect(pipeline.insertedText == "hello")
 	}
 
 	@Test
@@ -91,7 +93,7 @@ struct StreamingTranscriptPipelineTests {
 		_ = pipeline.observe("hello there", transform: Self.identity)
 
 		let outcome = pipeline.finish("something else", transform: Self.identity)
-		#expect(outcome.textToInsert == "there")
+		#expect(outcome.textToInsert == " there")
 		#expect(outcome.divergenceDiagnostic != nil)
 		#expect(pipeline.insertedText == "hello there")
 	}
@@ -104,7 +106,7 @@ struct StreamingTranscriptPipelineTests {
 		_ = pipeline.observe("hello", transform: Self.identity)
 		_ = pipeline.observe("hello there", transform: Self.identity)
 
-		#expect(pipeline.cancel() == "hello ")
+		#expect(pipeline.cancel() == "hello")
 		#expect(pipeline.pendingText == "")
 	}
 
@@ -116,7 +118,7 @@ struct StreamingTranscriptPipelineTests {
 
 		// Without the cursor reset this would read as a divergence against the
 		// previous utterance rather than a fresh one.
-		#expect(pipeline.observe("goodbye now", transform: Self.identity).textToInsert == "goodbye ")
-		#expect(pipeline.insertedText == "goodbye ")
+		#expect(pipeline.observe("goodbye now", transform: Self.identity).textToInsert == "goodbye")
+		#expect(pipeline.insertedText == "goodbye")
 	}
 }
