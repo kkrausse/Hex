@@ -9,7 +9,77 @@ This repository preserves the original Swift app, its history, and its releases.
 
 Press-and-hold a hotkey to transcribe your voice and paste the result wherever you're typing.
 
-**[Download the legacy Swift version](https://hex-updates.s3.us-east-1.amazonaws.com/hex-latest.dmg)**
+---
+
+## 🔀 This is a fork — `kkrausse/hex`, branch `streaming`
+
+Upstream is [kitlangton/Hex](https://github.com/kitlangton/Hex) (git remote `upstream`).
+This fork adds **live streaming dictation**: text pasted incrementally *while you
+speak*, using FluidAudio's Parakeet Unified streaming model. Upstream is
+batch-only — record, release, transcribe once, paste once.
+
+**Status:** the streaming model loads and transcribes, but the live incremental
+path is not finished yet, so it still pastes once at the end. See
+[`docs/streaming-next.md`](docs/streaming-next.md) for exactly what remains.
+
+Auto-update is disabled on purpose. Left enabled, this build would update itself
+back to an upstream release and silently discard the fork.
+
+### Running it
+
+No Xcode required — this fork adds a `Package.swift` that builds the app as a
+plain SPM executable, alongside the untouched `Hex.xcodeproj`.
+
+```bash
+swift build              # ~30s incremental, a few minutes cold
+./.build/debug/HexApp    # runs in the foreground
+```
+
+It's a **menu-bar app with no dock icon**, so nothing visibly opens — look for the
+hexagon at the top right of your screen. Settings live in that menu.
+
+```bash
+pkill -f "debug/HexApp"                        # stop it
+pkill -f "debug/HexApp"; swift build && ./.build/debug/HexApp   # rebuild + relaunch
+```
+
+Because this is an unsigned dev binary, macOS re-prompts for Microphone,
+Accessibility, and Input Monitoring whenever the executable changes. A stable
+signing identity would avoid that.
+
+> `swift run HexApp` also works, but swallows the app's stdout logging — prefer
+> launching the binary directly.
+
+### Tests
+
+```bash
+./HexCore/run-tests.sh
+```
+
+Use this rather than `swift test`. On a Command Line Tools-only machine, Swift
+Testing is installed but off the default search paths, and a plain `swift test`
+fails three ways in a row; the script bakes the needed rpaths in at link time.
+
+### Notes
+
+- **First transcription stalls ~20s** while CoreML compiles the encoder. Cached
+  in memory afterward.
+- **The streaming model is currently slower than the batch one.** Expected — it's
+  still going through an interim whole-file path, where the streaming encoder
+  re-encodes overlapping windows and does strictly more work than the offline
+  encoder for no benefit. This inverts once the live path lands.
+- Models are shared with any other FluidAudio app on the machine
+  (`~/Library/Application Support/FluidAudio/Models/`), since the SPM build isn't
+  sandboxed.
+
+Agent-facing notes live in [`CLAUDE.md`](CLAUDE.md).
+
+---
+
+*Everything below is upstream's README. **The download links are upstream's
+builds, not this fork** — to run the fork, build it as above.*
+
+**[Download Hex for macOS](https://hex-updates.s3.us-east-1.amazonaws.com/hex-latest.dmg)**
 
 > **Note:** Hex is currently only available for **Apple Silicon** Macs.
 
