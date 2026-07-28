@@ -17,6 +17,16 @@ import Foundation
 /// ends. Steady state is one word behind; `flush()` releases the remainder, so
 /// nothing is lost when the user releases the hotkey.
 ///
+/// **The separating whitespace is held back with the next word, not emitted
+/// with the previous one** — releases look like `"hello"`, `" world"`,
+/// `" there"` rather than `"hello "`, `"world "`. Each release is pasted into
+/// the focused app as its own fragment, and rich-text editors routinely trim
+/// whitespace at the edges of a pasted fragment. Slack's composer trims a
+/// trailing space and keeps a leading one (verified by hand), so a trailing
+/// space is silently dropped and the words arrive glued together as
+/// `"helloworld"`. Leading whitespace survives, so that is where it goes. The
+/// concatenation is identical either way; only the fragment boundaries move.
+///
 /// Known limitation, accepted deliberately: a remapping whose *match* spans a
 /// space (`"new line" → "\n"`) will not fire when the words land in different
 /// deltas. Handling that needs multi-word lookahead, which is out of scope.
@@ -45,13 +55,25 @@ public struct StreamingTextTransformer: Sendable {
 		guard !delta.isEmpty else { return "" }
 		pending += delta
 
-		// Release through the final whitespace: everything before it is made of
+		// Release up to the final whitespace: everything before it is made of
 		// words the decoder can no longer extend.
 		guard let lastBreak = pending.lastIndex(where: { $0.isWhitespace }) else {
 			return ""
 		}
 
-		let releaseEnd = pending.index(after: lastBreak)
+		// Then back up over the whole run of whitespace that break belongs to, so
+		// the released text ends on a word character and the separator stays with
+		// the word it precedes. See the type's doc comment for why that matters.
+		var releaseEnd = lastBreak
+		while releaseEnd > pending.startIndex {
+			let previous = pending.index(before: releaseEnd)
+			guard pending[previous].isWhitespace else { break }
+			releaseEnd = previous
+		}
+
+		// Nothing but whitespace so far — hold it for the word it will precede.
+		guard releaseEnd > pending.startIndex else { return "" }
+
 		let ready = String(pending[..<releaseEnd])
 		pending = String(pending[releaseEnd...])
 		return transform(ready)

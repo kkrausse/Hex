@@ -23,16 +23,17 @@ struct StreamingTextTransformerTests {
 		#expect(transformer.consume("hello", transform: Self.identity) == "")
 		#expect(transformer.pendingText == "hello")
 
-		// The space that ends "hello" arrives with the next piece.
-		#expect(transformer.consume(" there", transform: Self.identity) == "hello ")
-		#expect(transformer.pendingText == "there")
+		// The space that ends "hello" arrives with the next piece, and stays with
+		// it: released fragments start on whitespace and end on a word character.
+		#expect(transformer.consume(" there", transform: Self.identity) == "hello")
+		#expect(transformer.pendingText == " there")
 	}
 
 	@Test
 	func flushReleasesFinalWord() {
 		var transformer = StreamingTextTransformer()
 		_ = transformer.consume("hello there", transform: Self.identity)
-		#expect(transformer.flush(transform: Self.identity) == "there")
+		#expect(transformer.flush(transform: Self.identity) == " there")
 		#expect(transformer.pendingText == "")
 	}
 
@@ -60,18 +61,43 @@ struct StreamingTextTransformerTests {
 		#expect(output == deltas.joined())
 	}
 
+	/// The invariant that keeps dictated words from gluing together in Slack.
+	///
+	/// Each release is pasted as its own fragment, and Slack's composer trims a
+	/// trailing space off a pasted fragment while keeping a leading one. So a
+	/// release must never end in whitespace, or the separator is silently
+	/// dropped and the words arrive as "helloworld".
+	@Test
+	func noReleaseEndsInWhitespace() {
+		var transformer = StreamingTextTransformer()
+		let deltas = [
+			"hello", " there", " ", " friend", "s", "  spaced", "\ttabbed", " end",
+		]
+		var releases: [String] = []
+		for delta in deltas {
+			releases.append(transformer.consume(delta, transform: Self.identity))
+		}
+		releases.append(transformer.flush(transform: Self.identity))
+
+		for release in releases where !release.isEmpty {
+			#expect(release.last?.isWhitespace == false, "released \(String(reflecting: release))")
+		}
+		// And nothing is lost or reordered in the process.
+		#expect(releases.joined() == deltas.joined())
+	}
+
 	@Test
 	func handlesMultipleWordsInOneDelta() {
 		var transformer = StreamingTextTransformer()
-		#expect(transformer.consume("one two three", transform: Self.identity) == "one two ")
-		#expect(transformer.pendingText == "three")
+		#expect(transformer.consume("one two three", transform: Self.identity) == "one two")
+		#expect(transformer.pendingText == " three")
 	}
 
 	@Test
 	func newlineCountsAsABoundary() {
 		var transformer = StreamingTextTransformer()
-		#expect(transformer.consume("line\nnext", transform: Self.identity) == "line\n")
-		#expect(transformer.pendingText == "next")
+		#expect(transformer.consume("line\nnext", transform: Self.identity) == "line")
+		#expect(transformer.pendingText == "\nnext")
 	}
 
 	// MARK: - The corruption case this type exists to prevent
@@ -87,9 +113,9 @@ struct StreamingTextTransformerTests {
 		output += transformer.consume("nding", transform: Self.remap)
 		output += transformer.flush(transform: Self.remap)
 		#expect(output == " commanding")
-		// Note the leading space is released on the first delta — it is itself a
-		// boundary — so the per-call split is " " / "" / "commanding". Only the
-		// concatenation is contractual.
+		// Nothing is released until the word completes: the leading space is held
+		// back to travel with the word it precedes, so the per-call split is
+		// "" / "" / " commanding". Only the concatenation is contractual.
 	}
 
 	@Test
