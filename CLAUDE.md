@@ -31,6 +31,13 @@ Key facts established before any code was written:
   Leaving the upstream feed in place would let this build auto-update itself back to
   an upstream release and silently discard the fork. Both changes must stay together:
   starting the updater with no feed throws `SUNoFeedURLError` and alerts on launch.
+- **Live streaming works.** Selecting the Parakeet Unified streaming model makes text
+  appear in the focused app about one word behind your voice.
+  **`docs/streaming-next.md` is the reference** — it records the path an utterance
+  takes, the handful of load-bearing non-obvious details (the partial callback must
+  be silenced before `finish()`, the end-of-utterance marker, why the sample tap is
+  never cancelled), and the decisions taken deliberately. Read it before touching
+  any of this.
 - **`StreamingTextTransformer`** (`HexCore/Sources/HexCore/Logic/`) applies word
   remappings to an incrementally-arriving transcript. See its doc comment for why the
   release boundary is whitespace and not the delta.
@@ -40,7 +47,20 @@ Key facts established before any code was written:
 In: streaming via `parakeetUnified1120ms` (hardcoded), delta paste, remappings through
 `StreamingTextTransformer`, Sparkle off. Out: settings UI, latency-tier picker,
 streaming on/off toggle, multi-word remapping lookahead. **The batch path stays fully
-intact** — streaming is added beside it, never replacing it, so upstream merges stay cheap.
+intact** — streaming is added beside it, never replacing it, so upstream merges stay
+cheap. Streaming also requires super fast mode, since that is the only path with a
+sample tap; with it off a streaming model silently falls back to batch.
+
+### Watching what the app is doing
+
+Hex logs to the unified log, **not stdout** — only FluidAudio prints to the terminal:
+
+```bash
+log show --last 5m --info --predicate 'subsystem == "com.kitlangton.Hex"' --style compact
+```
+
+Note most interesting values are `<private>`; add `privacy: .public` temporarily when
+you need one, rather than removing the annotation for good.
 
 ### Running it
 

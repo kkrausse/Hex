@@ -22,6 +22,9 @@ struct TranscriptionFeature {
     var isRecording: Bool = false
     var isTranscribing: Bool = false
     var isPrewarming: Bool = false
+    /// True between opening a live streaming session and closing it. When false
+    /// the recording takes the batch path, whatever model is selected.
+    var isStreamingSession: Bool = false
     var error: String?
     var recordingStartTime: Date?
     var meter: Meter = .init(averagePower: 0, peakPower: 0)
@@ -53,6 +56,12 @@ struct TranscriptionFeature {
     case transcriptionResult(String, URL, TimeInterval)
     case transcriptionError(Error, URL?)
 
+    // Streaming flow
+    /// The live session could not be opened; this recording falls back to batch.
+    case streamingSessionUnavailable
+    /// A streaming session ended. The text is already in the user's document.
+    case streamingResult(String, URL?, TimeInterval)
+
     // Model availability
     case modelMissing
   }
@@ -62,9 +71,11 @@ struct TranscriptionFeature {
     case recordingStart
     case recordingCleanup
     case transcription
+    case sampleForwarding
   }
 
   @Dependency(\.transcription) var transcription
+  @Dependency(\.streamingDictation) var streamingDictation
   @Dependency(\.recording) var recording
   @Dependency(\.pasteboard) var pasteboard
   @Dependency(\.keyEventMonitor) var keyEventMonitor
@@ -79,14 +90,18 @@ struct TranscriptionFeature {
       // MARK: - Lifecycle / Setup
 
       case .task:
-        // Starts two concurrent effects:
+        // Starts concurrent effects:
         // 1) Observing audio meter
         // 2) Monitoring hot key events
         // 3) Priming the recorder for instant startup
+        // 4) Draining the capture tap into the streaming decoder
+        // 5) Compiling the streaming encoder before it is first needed
         return .merge(
           startMeteringEffect(),
           startHotKeyMonitoringEffect(),
-          warmUpRecorderEffect()
+          warmUpRecorderEffect(),
+          startSampleForwardingEffect(),
+          prewarmStreamingModelEffect(model: state.hexSettings.selectedModel)
         )
 
       // MARK: - Metering
@@ -122,6 +137,15 @@ struct TranscriptionFeature {
 
       case let .transcriptionError(error, audioURL):
         return handleTranscriptionError(&state, error: error, audioURL: audioURL)
+
+      // MARK: - Streaming Results
+
+      case .streamingSessionUnavailable:
+        state.isStreamingSession = false
+        return .none
+
+      case let .streamingResult(text, audioURL, duration):
+        return handleStreamingResult(&state, text: text, audioURL: audioURL, duration: duration)
 
       case .modelMissing:
         return .none
@@ -253,6 +277,31 @@ private extension TranscriptionFeature {
       await recording.warmUpRecorder()
     }
   }
+
+  /// Hands the capture tap to the streaming decoder for the app's lifetime.
+  ///
+  /// Started once and never cancelled, like metering: the tap is a single
+  /// `AsyncStream`, and cancelling a task suspended on it terminates the stream
+  /// for good. Per-recording teardown is the session's job instead — buffers
+  /// arriving with no session open are dropped by the client.
+  func startSampleForwardingEffect() -> Effect<Action> {
+    .run { _ in
+      await streamingDictation.consumeSamples(recording.observeSamples())
+    }
+    .cancellable(id: CancelID.sampleForwarding, cancelInFlight: true)
+  }
+
+  /// Compiles the streaming encoder in the background at launch.
+  ///
+  /// The first load is a ~20 s CoreML compile. Doing it here means the user pays
+  /// it while the app is idle rather than while holding the hotkey, where it
+  /// would silently swallow the opening words of a recording.
+  func prewarmStreamingModelEffect(model: String) -> Effect<Action> {
+    guard StreamingModel.isStreaming(model) else { return .none }
+    return .run { _ in
+      await streamingDictation.prewarm(model)
+    }
+  }
 }
 
 // MARK: - HotKey Press/Release Handlers
@@ -294,10 +343,24 @@ private extension TranscriptionFeature {
     }
     transcriptionFeatureLogger.notice("Recording started at \(startTime.ISO8601Format())")
 
+    // Live streaming needs the capture engine's sample tap, which only exists in
+    // super fast mode. With it off the recording still happens — it just takes
+    // the batch path at the end, exactly as it does for any non-streaming model.
+    let model = state.hexSettings.selectedModel
+    let wantsStreaming = StreamingModel.isStreaming(model) && state.hexSettings.superFastModeEnabled
+    if StreamingModel.isStreaming(model), !state.hexSettings.superFastModeEnabled {
+      transcriptionFeatureLogger.notice(
+        "Streaming model selected but super fast mode is off; using the batch path for this recording"
+      )
+    }
+    state.isStreamingSession = wantsStreaming
+    let transformStack = streamingTransformStack(&state)
+    let keepTranscriptOnClipboard = state.hexSettings.copyToClipboard
+
     // Prevent system sleep during recording
     return .merge(
       .cancel(id: CancelID.recordingCleanup),
-      .run { [sleepManagement, preventSleep = state.hexSettings.preventSystemSleep] _ in
+      .run { [sleepManagement, preventSleep = state.hexSettings.preventSystemSleep] send in
         // Play sound immediately for instant feedback
         soundEffect.play(.startRecording)
 
@@ -310,9 +373,35 @@ private extension TranscriptionFeature {
           }
           return
         }
+        // Opened before the recorder so no captured buffer predates the session.
+        if wantsStreaming {
+          do {
+            try await streamingDictation.start(model, transformStack, keepTranscriptOnClipboard)
+          } catch {
+            transcriptionFeatureLogger.error(
+              "Could not open a streaming session (\(error.localizedDescription)); falling back to the batch path"
+            )
+            await send(.streamingSessionUnavailable)
+          }
+        }
         await recording.startRecording()
       }
       .cancellable(id: CancelID.recordingStart, cancelInFlight: true)
+    )
+  }
+
+  /// The transform stack streaming applies per released word.
+  ///
+  /// Deliberately the same type the batch path runs over the whole transcript in
+  /// `handleTranscriptionResult`, so the two cannot drift.
+  func streamingTransformStack(_ state: inout State) -> TranscriptTransformStack {
+    guard !state.isRemappingScratchpadFocused else { return .identity }
+    return TranscriptTransformStack(
+      removalsEnabled: state.hexSettings.wordRemovalsEnabled,
+      removals: state.hexSettings.wordRemovals,
+      remappings: state.hexSettings.wordRemappings,
+      lowercase: state.hexSettings.lowercaseTranscripts,
+      removePunctuation: state.hexSettings.removePunctuation
     )
   }
 
@@ -367,6 +456,43 @@ private extension TranscriptionFeature {
     let language = state.hexSettings.outputLanguage
 
     state.isPrewarming = true
+
+    if state.isStreamingSession {
+      state.isStreamingSession = false
+      return .merge(
+        .cancel(id: CancelID.recordingStart),
+        .run { [sleepManagement] send in
+          await sleepManagement.allowSleep()
+
+          // Stop first: `finish` waits for the marker this emits, so every
+          // sample captured is decoded before the decoder is flushed.
+          let stopResult = await recording.stopRecording()
+          var capturedURL: URL?
+          switch stopResult {
+          case let .captured(url):
+            capturedURL = url
+          case .ignored(.staleSession):
+            transcriptionFeatureLogger.notice("Ignoring streaming stop superseded by a newer recording session")
+            _ = await streamingDictation.cancel()
+            return
+          case .ignored(.noActiveRecording):
+            transcriptionFeatureLogger.error("Streaming recording stopped without captured audio")
+          case let .failed(error):
+            // The text is already in the user's document either way, so this
+            // only costs the history entry's audio.
+            transcriptionFeatureLogger.error("Streaming recording stop failed: \(error.localizedDescription)")
+          }
+          soundEffect.play(.stopRecording)
+
+          let result = await streamingDictation.finish()
+          transcriptionFeatureLogger.notice(
+            "Streaming session inserted \(result.insertedText.count) characters over \(String(format: "%.2f", duration))s"
+          )
+          await send(.streamingResult(result.insertedText, capturedURL, duration))
+        }
+        .cancellable(id: CancelID.transcription)
+      )
+    }
 
     return .merge(
       .cancel(id: CancelID.recordingStart),
@@ -456,36 +582,23 @@ private extension TranscriptionFeature {
     }
 
     transcriptionFeatureLogger.info("Raw transcription: '\(result, privacy: .private)'")
-    let remappings = state.hexSettings.wordRemappings
-    let removalsEnabled = state.hexSettings.wordRemovalsEnabled
-    let removals = state.hexSettings.wordRemovals
-    let modifiedResult: String
     if state.isRemappingScratchpadFocused {
-      modifiedResult = result
       transcriptionFeatureLogger.info("Scratchpad focused; skipping word modifications")
-    } else {
-      var output = result
-      if removalsEnabled {
-        let removedResult = WordRemovalApplier.apply(output, removals: removals)
-        if removedResult != output {
-          let enabledRemovalCount = removals.filter(\.isEnabled).count
-          transcriptionFeatureLogger.info("Applied \(enabledRemovalCount) word removal(s)")
-        }
-        output = removedResult
-      }
-      let remappedResult = WordRemappingApplier.apply(output, remappings: remappings)
-      if remappedResult != output {
+    }
+    // The same stack the streaming path applies per word, so the two paths
+    // cannot produce different text for the same speech.
+    let remappings = state.hexSettings.wordRemappings
+    let removals = state.hexSettings.wordRemovals
+    let modifiedResult = streamingTransformStack(&state).apply(result) { stage in
+      switch stage {
+      case .removals:
+        let enabledRemovalCount = removals.filter(\.isEnabled).count
+        transcriptionFeatureLogger.info("Applied \(enabledRemovalCount) word removal(s)")
+      case .remappings:
         transcriptionFeatureLogger.info("Applied \(remappings.count) word remapping(s)")
-      }
-      let formattedResult = TranscriptFormattingApplier.apply(
-        remappedResult,
-        lowercase: state.hexSettings.lowercaseTranscripts,
-        removePunctuation: state.hexSettings.removePunctuation
-      )
-      if formattedResult != remappedResult {
+      case .formatting:
         transcriptionFeatureLogger.info("Applied paste formatting")
       }
-      modifiedResult = formattedResult
     }
 
     guard !modifiedResult.isEmpty else {
@@ -508,6 +621,57 @@ private extension TranscriptionFeature {
           audioURL: audioURL,
           transcriptionHistory: transcriptionHistory
         )
+      } catch {
+        await send(.transcriptionError(error, audioURL))
+      }
+    }
+    .cancellable(id: CancelID.transcription)
+  }
+
+  /// Finishes a streaming session. The text is already in the user's document,
+  /// so this only has history, sound, and cleanup left to do — no transforms
+  /// (they were applied per word on the way out) and no paste.
+  func handleStreamingResult(
+    _ state: inout State,
+    text: String,
+    audioURL: URL?,
+    duration: TimeInterval
+  ) -> Effect<Action> {
+    state.isTranscribing = false
+    state.isPrewarming = false
+    state.isStreamingSession = false
+
+    if ForceQuitCommandDetector.matches(text) {
+      transcriptionFeatureLogger.fault("Force quit voice command recognized; terminating Hex.")
+      return .run { _ in
+        if let audioURL { FileManager.default.removeItemIfExists(at: audioURL) }
+        await MainActor.run {
+          NSApp.terminate(nil)
+        }
+      }
+    }
+
+    guard !text.isEmpty else {
+      return .run { _ in
+        if let audioURL { FileManager.default.removeItemIfExists(at: audioURL) }
+      }
+    }
+
+    let sourceAppBundleID = state.sourceAppBundleID
+    let sourceAppName = state.sourceAppName
+    let transcriptionHistory = state.$transcriptionHistory
+
+    return .run { send in
+      do {
+        try await storeTranscript(
+          result: text,
+          duration: duration,
+          sourceAppBundleID: sourceAppBundleID,
+          sourceAppName: sourceAppName,
+          audioURL: audioURL,
+          transcriptionHistory: transcriptionHistory
+        )
+        soundEffect.play(.pasteTranscript)
       } catch {
         await send(.transcriptionError(error, audioURL))
       }
@@ -540,7 +704,40 @@ private extension TranscriptionFeature {
     audioURL: URL,
     transcriptionHistory: Shared<TranscriptionHistory>
   ) async throws {
+    try await storeTranscript(
+      result: result,
+      duration: duration,
+      sourceAppBundleID: sourceAppBundleID,
+      sourceAppName: sourceAppName,
+      audioURL: audioURL,
+      transcriptionHistory: transcriptionHistory
+    )
+    await pasteboard.paste(result)
+    soundEffect.play(.pasteTranscript)
+  }
+
+  /// Moves the audio to its permanent location and records the transcript.
+  ///
+  /// Split out from `finalizeRecordingAndStoreTranscript` for the streaming
+  /// path, which has already put its text in the user's document one word at a
+  /// time and must not paste it a second time.
+  ///
+  /// `audioURL` is nil when the recording produced no file — a streaming session
+  /// can still have inserted text that deserves a history entry.
+  func storeTranscript(
+    result: String,
+    duration: TimeInterval,
+    sourceAppBundleID: String?,
+    sourceAppName: String?,
+    audioURL: URL?,
+    transcriptionHistory: Shared<TranscriptionHistory>
+  ) async throws {
     @Shared(.hexSettings) var hexSettings: HexSettings
+
+    guard let audioURL else {
+      transcriptionFeatureLogger.notice("Skipping the history entry: the recording produced no audio file")
+      return
+    }
 
     if hexSettings.saveTranscriptionHistory {
       let transcript = try await transcriptPersistence.save(
@@ -567,9 +764,6 @@ private extension TranscriptionFeature {
     } else {
       FileManager.default.removeItemIfExists(at: audioURL)
     }
-
-    await pasteboard.paste(result)
-    soundEffect.play(.pasteTranscript)
   }
 }
 
@@ -578,9 +772,16 @@ private extension TranscriptionFeature {
 private extension TranscriptionFeature {
   func handleCancel(_ state: inout State) -> Effect<Action> {
     let wasRecording = state.isRecording
+    let wasStreaming = state.isStreamingSession
     state.isTranscribing = false
     state.isRecording = false
     state.isPrewarming = false
+    state.isStreamingSession = false
+
+    let duration = state.recordingStartTime.map { now.timeIntervalSince($0) } ?? 0
+    let sourceAppBundleID = state.sourceAppBundleID
+    let sourceAppName = state.sourceAppName
+    let transcriptionHistory = state.$transcriptionHistory
 
     return .merge(
       .cancel(id: CancelID.transcription),
@@ -597,6 +798,29 @@ private extension TranscriptionFeature {
 		if case let .captured(url) = result {
 		  FileManager.default.removeItemIfExists(at: url)
 		}
+
+        // Cancelling a streaming session cannot undo it: the words are already
+        // in someone else's document, and Hex has no claim on that text. So
+        // cancel means "stop now", not "undo" — the mic is released and the
+        // held-back partial word is dropped, but what landed stays, and it
+        // still gets a history entry so it is recoverable from Hex.
+        if wasStreaming {
+          let streamed = await streamingDictation.cancel()
+          if !streamed.insertedText.isEmpty {
+            transcriptionFeatureLogger.notice(
+              "Cancelled a streaming session that had already inserted \(streamed.insertedText.count) characters; keeping them"
+            )
+            try? await storeTranscript(
+              result: streamed.insertedText,
+              duration: duration,
+              sourceAppBundleID: sourceAppBundleID,
+              sourceAppName: sourceAppName,
+              // The audio was just deleted along with the cancelled recording.
+              audioURL: nil,
+              transcriptionHistory: transcriptionHistory
+            )
+          }
+        }
 		guard !Task.isCancelled else { return }
 		soundEffect.play(.cancel)
       }
@@ -605,8 +829,10 @@ private extension TranscriptionFeature {
   }
 
   func handleDiscard(_ state: inout State) -> Effect<Action> {
+    let wasStreaming = state.isStreamingSession
     state.isRecording = false
     state.isPrewarming = false
+    state.isStreamingSession = false
 
     // Silently discard - no sound effect
     return .merge(
@@ -618,6 +844,17 @@ private extension TranscriptionFeature {
 		if case let .captured(url) = result {
 		  FileManager.default.removeItemIfExists(at: url)
 		}
+        // Discard fires for recordings too short to have produced any streamed
+        // text — well under the decoder's first window. Tear the session down
+        // anyway so the next recording starts from a clean decoder.
+        if wasStreaming {
+          let streamed = await streamingDictation.cancel()
+          if !streamed.insertedText.isEmpty {
+            transcriptionFeatureLogger.notice(
+              "Discarded a streaming session that had inserted \(streamed.insertedText.count) characters; keeping them"
+            )
+          }
+        }
 		guard !Task.isCancelled else { return }
       }
       .cancellable(id: CancelID.recordingCleanup, cancelInFlight: true)
