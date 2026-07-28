@@ -7,12 +7,12 @@ import HexCore
 private let dictationLogger = HexLog.transcription
 
 enum StreamingDictationError: LocalizedError {
-	case modelNotDownloaded(String)
+	case modelNotReady(String)
 
 	var errorDescription: String? {
 		switch self {
-		case let .modelNotDownloaded(name):
-			return "The streaming model \(name) is not downloaded yet."
+		case let .modelNotReady(name):
+			return "The streaming model \(name) is not loaded yet."
 		}
 	}
 }
@@ -119,7 +119,8 @@ actor StreamingDictationLive {
 	/// task on launch.
 	func prewarm(modelName: String) async {
 		guard StreamingModel.isStreaming(modelName),
-		      await asr.isModelAvailable(modelName)
+		      await asr.isModelAvailable(modelName),
+		      await !asr.isLoaded(modelName)
 		else { return }
 		do {
 			let start = Date()
@@ -132,6 +133,7 @@ actor StreamingDictationLive {
 		}
 	}
 
+
 	func start(
 		modelName: String,
 		transform: TranscriptTransformStack,
@@ -142,12 +144,16 @@ actor StreamingDictationLive {
 			_ = await cancel()
 		}
 
-		guard await asr.isModelAvailable(modelName) else {
-			throw StreamingDictationError.modelNotDownloaded(modelName)
+		// Never wait for a load here. A cold CoreML compile is seconds long, and
+		// the caller opens the microphone only after this returns — so waiting
+		// means the recording does not start at all while the user is already
+		// talking. Failing fast costs this one recording its live insertion; it
+		// still records and transcribes through the batch path.
+		// The caller reacts to this by kicking off a prewarm, so the next
+		// recording streams and the indicator can say why this one did not.
+		guard await asr.isLoaded(modelName) else {
+			throw StreamingDictationError.modelNotReady(modelName)
 		}
-		// Idempotent and fast once warm. On a cold first use this is the ~20 s
-		// CoreML compile, which is what `prewarm` exists to keep off this path.
-		try await asr.ensureLoaded(modelName: modelName, progress: { _ in })
 
 		let (updates, continuation) = AsyncStream<Update>.makeStream(bufferingPolicy: .unbounded)
 		try await asr.startSession(modelName: modelName) { cumulative in

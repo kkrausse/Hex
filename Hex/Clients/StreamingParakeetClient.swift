@@ -40,6 +40,14 @@ actor StreamingParakeetClient {
 		return manager
 	}
 
+	/// Whether this variant is loaded in memory *right now* and can open a
+	/// session without waiting. Distinct from `isModelAvailable`, which only says
+	/// the bytes are on disk — the CoreML compile between the two takes seconds.
+	func isLoaded(_ modelName: String) -> Bool {
+		guard let model = StreamingModel(rawValue: modelName) else { return false }
+		return loadedModel == model && manager != nil
+	}
+
 	/// Whether this variant's encoder is already on disk.
 	///
 	/// Checks the same specific file `StreamingUnifiedAsrManager.loadModels()`
@@ -339,6 +347,7 @@ actor StreamingParakeetClient {
 	static let shared = StreamingParakeetClient()
 
 	func isModelAvailable(_: String) async -> Bool { false }
+	func isLoaded(_: String) -> Bool { false }
 	func ensureLoaded(modelName _: String, progress _: @escaping @Sendable (Progress) -> Void) async throws {
 		throw Self.notLinked
 	}

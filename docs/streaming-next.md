@@ -47,6 +47,12 @@ whole design is built around.
   per-recording consumer would kill the tap for every *later* recording. Consume
   it once, never cancel it, and let the client drop buffers when no session is
   open.
+- **Opening a session never waits for a load.** The encoder's cold CoreML compile
+  is 8–23 s, and `start()` is awaited *before* `recording.startRecording()` — so
+  waiting there meant the microphone did not open at all while the user was
+  already talking. It now fails fast, the recording proceeds through the batch
+  path, and the feature kicks off a prewarm so the next one streams. The
+  indicator shows "Loading live dictation…" for the duration.
 - **`ensureLoaded` deduplicates concurrent loads.** Actor isolation is not enough:
   `loadModels` suspends, and a suspended actor lets the next caller in, who finds
   `loadedModel` still unset and starts a second ~650 MB load. Three callers race
@@ -83,7 +89,8 @@ whole design is built around.
 ## Remaining
 
 1. **Settings UI.** Latency-tier picker, streaming on/off toggle, live-transcript
-   display in the indicator. Still deliberately out of scope.
+   display in the indicator. Still deliberately out of scope. (The indicator does
+   now report model loading — see `Status.loadingModel`.)
 2. **Unicode injection instead of the clipboard.** Would remove the paste race,
    the 120 ms floor, and the clipboard churn entirely.
 3. **A stable signing identity.** The unsigned dev binary makes macOS re-prompt

@@ -25,6 +25,10 @@ struct TranscriptionFeature {
     /// True between opening a live streaming session and closing it. When false
     /// the recording takes the batch path, whatever model is selected.
     var isStreamingSession: Bool = false
+    /// True while the streaming encoder is compiling. Until it clears, a
+    /// recording still works but cannot stream, so the indicator says so rather
+    /// than leaving the user to guess why no text is appearing.
+    var isStreamingModelLoading: Bool = false
     var error: String?
     var recordingStartTime: Date?
     var meter: Meter = .init(averagePower: 0, peakPower: 0)
@@ -57,8 +61,12 @@ struct TranscriptionFeature {
     case transcriptionError(Error, URL?)
 
     // Streaming flow
+    /// The streaming encoder started or finished compiling.
+    case streamingModelLoadingChanged(Bool)
     /// The live session could not be opened; this recording falls back to batch.
-    case streamingSessionUnavailable
+    /// `modelNotReady` distinguishes "still compiling, try again in a moment"
+    /// from a real failure.
+    case streamingSessionUnavailable(modelNotReady: Bool)
     /// A streaming session ended. The text is already in the user's document.
     case streamingResult(String, URL?, TimeInterval)
 
@@ -72,6 +80,7 @@ struct TranscriptionFeature {
     case recordingCleanup
     case transcription
     case sampleForwarding
+    case streamingPrewarm
   }
 
   @Dependency(\.transcription) var transcription
@@ -140,9 +149,16 @@ struct TranscriptionFeature {
 
       // MARK: - Streaming Results
 
-      case .streamingSessionUnavailable:
-        state.isStreamingSession = false
+      case let .streamingModelLoadingChanged(isLoading):
+        state.isStreamingModelLoading = isLoading
         return .none
+
+      case let .streamingSessionUnavailable(modelNotReady):
+        state.isStreamingSession = false
+        // Load it now so the next recording streams. Same effect the launch
+        // prewarm uses, so the indicator reports it the same way.
+        guard modelNotReady else { return .none }
+        return prewarmStreamingModelEffect(model: state.hexSettings.selectedModel)
 
       case let .streamingResult(text, audioURL, duration):
         return handleStreamingResult(&state, text: text, audioURL: audioURL, duration: duration)
@@ -298,9 +314,12 @@ private extension TranscriptionFeature {
   /// would silently swallow the opening words of a recording.
   func prewarmStreamingModelEffect(model: String) -> Effect<Action> {
     guard StreamingModel.isStreaming(model) else { return .none }
-    return .run { _ in
+    return .run { send in
+      await send(.streamingModelLoadingChanged(true))
       await streamingDictation.prewarm(model)
+      await send(.streamingModelLoadingChanged(false))
     }
+    .cancellable(id: CancelID.streamingPrewarm, cancelInFlight: true)
   }
 }
 
@@ -378,10 +397,16 @@ private extension TranscriptionFeature {
           do {
             try await streamingDictation.start(model, transformStack, keepTranscriptOnClipboard)
           } catch {
-            transcriptionFeatureLogger.error(
-              "Could not open a streaming session (\(error.localizedDescription)); falling back to the batch path"
+            let modelNotReady: Bool
+            if case StreamingDictationError.modelNotReady = error {
+              modelNotReady = true
+            } else {
+              modelNotReady = false
+            }
+            transcriptionFeatureLogger.notice(
+              "Could not open a streaming session (\(error.localizedDescription)); recording through the batch path instead"
             )
-            await send(.streamingSessionUnavailable)
+            await send(.streamingSessionUnavailable(modelNotReady: modelNotReady))
           }
         }
         await recording.startRecording()
@@ -875,6 +900,10 @@ struct TranscriptionView: View {
       return .recording
     } else if store.isPrewarming {
       return .prewarming
+    } else if store.isStreamingModelLoading {
+      // Last, so it never hides live recording feedback. It shows while the app
+      // is idle, which is exactly when the user is deciding whether to start.
+      return .loadingModel
     } else {
       return .hidden
     }
