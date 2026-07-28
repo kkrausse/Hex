@@ -74,7 +74,9 @@ actor TranscriptionClientLive {
   private var currentModelName: String?
   private var parakeet: ParakeetClient = ParakeetClient()
   /// Streaming models are handled by a sibling client; see StreamingParakeetClient.
-  private var streamingParakeet: StreamingParakeetClient = StreamingParakeetClient()
+  /// Shared with `StreamingDictationLive`, which opens live sessions against the
+  /// same loaded encoder this client downloads.
+  private let streamingParakeet = StreamingParakeetClient.shared
 
   /// The base folder under which we store model data (e.g., ~/Library/Application Support/...).
   private lazy var modelsBaseFolder: URL = {

@@ -338,6 +338,10 @@ final class SuperFastCaptureController {
         let prependedDuration = Double(preRollSamples.count) / SuperFastCaptureConstants.sampleRate
         if !preRollSamples.isEmpty {
           try write(samples: preRollSamples, to: file)
+          // The streaming decoder gets the pre-roll too, so it hears the same
+          // audio as the file. Without it a fast talker's first syllable reaches
+          // the transcript that gets saved but not the text that gets typed.
+          samplesContinuation.yield(preRollSamples)
         }
 
         logger.notice(
@@ -369,6 +373,13 @@ final class SuperFastCaptureController {
         result = .captured(url)
       } else {
         result = .idle
+      }
+      if activeRecording != nil {
+        // End-of-utterance marker. Yielded from inside the same serial queue as
+        // every sample buffer, so it is ordered strictly after the last one —
+        // which is what lets a streaming consumer know it has all the audio and
+        // can flush, instead of guessing with a timeout.
+        samplesContinuation.yield([])
       }
       activeRecording = nil
       recordingFailure = nil

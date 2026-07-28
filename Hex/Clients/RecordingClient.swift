@@ -32,6 +32,14 @@ struct RecordingClient {
   var requestMicrophoneAccess: @Sendable () async -> Bool = { false }
   var observeAudioLevel: @Sendable () async -> AsyncStream<Meter> = { AsyncStream { _ in } }
   /// Live 16 kHz mono Float32 buffers while a recording is active, for streaming ASR.
+  ///
+  /// An empty array is the end-of-utterance marker: the recording has stopped
+  /// and every sample it captured has already been delivered.
+  ///
+  /// One shared stream for the app's lifetime, deliberately: an `AsyncStream`
+  /// terminates permanently when the task iterating it is cancelled, so a
+  /// per-recording consumer would kill the stream for every later recording.
+  /// Consume it once and leave it running.
   var observeSamples: @Sendable () async -> AsyncStream<[Float]> = { AsyncStream { _ in } }
   var getAvailableInputDevices: @Sendable () async -> [AudioInputDevice] = { [] }
   var getDefaultInputDeviceName: @Sendable () async -> String? = { nil }

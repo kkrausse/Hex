@@ -13,12 +13,25 @@ import FluidAudio
 /// across audio callbacks — so they stay as sibling clients rather than one
 /// client with a mode flag.
 actor StreamingParakeetClient {
+	/// One decoder for the whole app.
+	///
+	/// Two owners need the *same* loaded encoder: `TranscriptionClientLive`,
+	/// which downloads and loads it for the model settings UI, and
+	/// `StreamingDictationLive`, which opens live sessions against it. Separate
+	/// instances would mean a second ~650 MB download and a second copy resident
+	/// in memory, and a session opened against one would not see the other's
+	/// loaded model.
+	static let shared = StreamingParakeetClient()
+
 	// Held concretely rather than as `any StreamingAsrManager`: the protocol's
 	// loadModels() takes no progress handler, and this is a ~650 MB download that
 	// must not look frozen. Widen back to the protocol when a second engine
 	// family (Nemotron, EOU) is actually supported.
 	private var manager: StreamingUnifiedAsrManager?
 	private var loadedModel: StreamingModel?
+	/// The load currently in flight, so concurrent callers share it instead of
+	/// each starting their own. See `ensureLoaded`.
+	private var loadTask: Task<Void, Error>?
 	private let logger = HexLog.parakeet
 
 	/// The loaded manager, or nil if `ensureLoaded` has not run for this model.
@@ -48,6 +61,13 @@ actor StreamingParakeetClient {
 	}
 
 	/// Downloads (if needed) and loads the model, reporting 0–100 progress.
+	///
+	/// Concurrent callers share one load. Actor isolation alone does not give
+	/// that: `loadModels` suspends, and a suspended actor lets the next call in,
+	/// which would find `loadedModel` still unset and start a second ~650 MB
+	/// download and a second CoreML compile. The app has three callers that can
+	/// legitimately race here — the settings UI, the launch prewarm, and the
+	/// first recording — so this is the normal case, not an edge one.
 	func ensureLoaded(
 		modelName: String,
 		progress: @escaping @Sendable (Progress) -> Void
@@ -62,15 +82,42 @@ actor StreamingParakeetClient {
 			)
 		}
 		if loadedModel == model, manager != nil {
-			// Still report completion. Callers drive a progress UI off this
-			// closure, so returning silently leaves it stuck at whatever fraction
-			// it last saw.
-			let done = Progress(totalUnitCount: 100)
-			done.completedUnitCount = 100
-			progress(done)
+			reportComplete(to: progress)
 			return
 		}
 
+		// Join a load already in flight rather than starting a second one. Its
+		// progress goes to whoever asked first; latecomers just get completion.
+		if let inFlight = loadTask {
+			logger.debug("Joining an in-flight streaming model load")
+			_ = try? await inFlight.value
+			if loadedModel == model, manager != nil {
+				reportComplete(to: progress)
+				return
+			}
+		}
+
+		let task = Task<Void, Error> { [weak self] in
+			guard let self else { return }
+			try await self.load(model: model, progress: progress)
+		}
+		loadTask = task
+		defer { loadTask = nil }
+		try await task.value
+	}
+
+	private func reportComplete(to progress: @escaping @Sendable (Progress) -> Void) {
+		// Callers drive a progress UI off this closure, so returning silently
+		// leaves it stuck at whatever fraction it last saw.
+		let done = Progress(totalUnitCount: 100)
+		done.completedUnitCount = 100
+		progress(done)
+	}
+
+	private func load(
+		model: StreamingModel,
+		progress: @escaping @Sendable (Progress) -> Void
+	) async throws {
 		// Drop any previously loaded variant before pulling a new one in, so two
 		// 0.6B encoders are never resident at once.
 		manager = nil
@@ -191,8 +238,22 @@ actor StreamingParakeetClient {
 	/// flush against the final encoder window, where the RNN-T decoder can
 	/// withhold its trailing emissions — during normal speech the decoder always
 	/// has trailing audio, so it never sees this case until the stream stops.
+	///
+	/// Returned verbatim, unlike `transcribe`: FluidAudio already trims this
+	/// string the same way it trims every partial, and trimming it again here
+	/// could make the final transcript stop being an extension of the last
+	/// partial — which is exactly the append-only invariant the caller's cursor
+	/// checks, and a violation means the flushed tail is dropped.
 	func finishSession(padMilliseconds: Int = 400) async throws -> String {
 		guard let manager else { return "" }
+		// Silence the partial callback first. `finish()` decodes the last windows
+		// and fires the callback for their emissions, and the string it then
+		// returns already contains that text — so leaving the callback installed
+		// delivers the tail twice, microseconds apart. The caller inserts each
+		// arrival into a live document, and two pastes that close together race:
+		// the second overwrites the clipboard before the target app has serviced
+		// the first, and the last word lands twice.
+		await manager.setPartialTranscriptCallback { _ in }
 		if padMilliseconds > 0 {
 			let padSamples = [Float](repeating: 0, count: padMilliseconds * 16)
 			try await manager.appendAudio(Self.makeBuffer(padSamples))
@@ -200,7 +261,7 @@ actor StreamingParakeetClient {
 		}
 		let text = try await manager.finish()
 		try await manager.reset()
-		return text.trimmingCharacters(in: .whitespacesAndNewlines)
+		return text
 	}
 
 	/// Abandons the session without producing a transcript.
@@ -275,15 +336,26 @@ actor StreamingParakeetClient {
 #else
 
 actor StreamingParakeetClient {
+	static let shared = StreamingParakeetClient()
+
 	func isModelAvailable(_: String) async -> Bool { false }
 	func ensureLoaded(modelName _: String, progress _: @escaping @Sendable (Progress) -> Void) async throws {
-		throw NSError(
-			domain: "StreamingParakeet",
-			code: -3,
-			userInfo: [NSLocalizedDescriptionKey: "FluidAudio is not linked."]
-		)
+		throw Self.notLinked
 	}
 	func deleteCaches(modelName _: String) async throws {}
+	func transcribe(_: URL, modelName _: String) async throws -> String { throw Self.notLinked }
+	func startSession(modelName _: String, onPartial _: @escaping @Sendable (String) -> Void) async throws {
+		throw Self.notLinked
+	}
+	func append(_: [Float]) async throws {}
+	func finishSession(padMilliseconds _: Int = 400) async throws -> String { "" }
+	func cancelSession() async {}
+
+	private static let notLinked = NSError(
+		domain: "StreamingParakeet",
+		code: -3,
+		userInfo: [NSLocalizedDescriptionKey: "FluidAudio is not linked."]
+	)
 }
 
 #endif
