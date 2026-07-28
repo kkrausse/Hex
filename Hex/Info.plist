@@ -23,9 +23,12 @@
 	<string>Hex needs Input Monitoring permission so your global hotkey works in every app.</string>
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
-	<key>SUFeedURL</key>
-	<string>https://hex-updates.s3.amazonaws.com/appcast.xml</string>
-	<key>SUPublicEDKey</key>
-	<string>mIek27lttJe8cIBqVZFhh6reRKjpTx1h9ZY9OKWPtuM=</string>
+	<!-- Fork: upstream's Sparkle feed is removed on purpose. Leaving SUFeedURL
+	     pointing at hex-updates.s3.amazonaws.com would let this build auto-update
+	     itself back to an upstream release, silently replacing the streaming
+	     fork. SUEnableAutomaticChecks=false is belt-and-braces alongside the
+	     missing feed URL. Restore both only if this fork gets its own appcast. -->
+	<key>SUEnableAutomaticChecks</key>
+	<false/>
 </dict>
 </plist>

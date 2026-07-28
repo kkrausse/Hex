@@ -14,8 +14,13 @@ final class CheckForUpdatesViewModel {
 
 	static let shared = CheckForUpdatesViewModel()
 
+	// Fork: the updater is deliberately never started. This build has no Sparkle
+	// feed (see Info.plist), and starting the updater without one makes Sparkle
+	// throw SUNoFeedURLError and surface an alert on every launch. With
+	// startingUpdater: false, `canCheckForUpdates` stays false and the menu item
+	// below stays disabled. Flip this back only alongside a real appcast.
 	let controller = SPUStandardUpdaterController(
-		startingUpdater: true,
+		startingUpdater: false,
 		updaterDelegate: nil,
 		userDriverDelegate: nil
 	)
