@@ -1,9 +1,17 @@
 [
   {
-    "displayName": "Parakeet Unified (Streaming)",
+    "displayName": "Parakeet Streaming (1.1s)",
     "internalName": "parakeet-unified-en-0.6b-streaming-1120ms",
     "size": "English",
     "accuracyStars": 5,
+    "speedStars": 4,
+    "storageSize": "650MB"
+  },
+  {
+    "displayName": "Parakeet Streaming (2.1s)",
+    "internalName": "parakeet-unified-en-0.6b-streaming-2080ms",
+    "size": "English",
+    "accuracyStars": 4,
     "speedStars": 5,
     "storageSize": "650MB"
   },

@@ -301,14 +301,37 @@ actor StreamingParakeetClient {
 		return buffer
 	}
 
-	/// Removes the cached bundle for this variant and unloads it.
+	/// Removes this variant's cached encoder and unloads it.
+	///
+	/// Every tier shares one folder — and one decoder, joint network, and
+	/// vocabulary — differing only by encoder file. So this deletes the encoder,
+	/// and takes the shared files with it only once no other tier is still using
+	/// them. Removing the whole folder unconditionally would delete a tier the
+	/// user never asked to remove, and cost them a 650 MB re-download.
 	func deleteCaches(modelName: String) async throws {
 		guard let model = StreamingModel(rawValue: modelName) else { return }
+		let fileManager = FileManager.default
 		let directory = Self.cacheDirectory(for: model)
 
-		if FileManager.default.fileExists(atPath: directory.path) {
-			try FileManager.default.removeItem(at: directory)
-			logger.notice("Deleted streaming model cache at \(directory.path)")
+		let encoder = Self.encoderPath(for: model)
+		if fileManager.fileExists(atPath: encoder.path) {
+			try fileManager.removeItem(at: encoder)
+			logger.notice("Deleted streaming encoder at \(encoder.path)")
+		}
+
+		let remainingTiers = StreamingModel.allCases
+			.filter { $0 != model && $0.cacheFolderName == model.cacheFolderName }
+			.filter { fileManager.fileExists(atPath: Self.encoderPath(for: $0).path) }
+
+		if remainingTiers.isEmpty {
+			if fileManager.fileExists(atPath: directory.path) {
+				try fileManager.removeItem(at: directory)
+				logger.notice("Deleted the shared streaming model cache at \(directory.path)")
+			}
+		} else {
+			logger.notice(
+				"Kept the shared streaming model files: \(remainingTiers.count) other tier(s) still installed"
+			)
 		}
 		if loadedModel == model {
 			await manager?.cleanup()
