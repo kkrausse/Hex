@@ -85,6 +85,10 @@ struct KeyView: View {
   }
 }
 
+// SwiftUI previews rely on Xcode's PreviewsMacros plugin, which the SPM
+// executable build cannot load. SPM_BUILD is defined only by Package.swift,
+// so the Xcode build still compiles these previews normally.
+#if !SPM_BUILD
 #Preview {
   HotKeyView(
     modifiers: .init(modifiers: [.command, .shift]),
@@ -92,3 +96,4 @@ struct KeyView: View {
     isActive: true
   )
 }
+#endif

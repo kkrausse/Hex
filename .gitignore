@@ -21,3 +21,6 @@ node_modules/
 
 # Claude
 .claude/
+
+# SPM build products (root package added by this fork)
+.build/

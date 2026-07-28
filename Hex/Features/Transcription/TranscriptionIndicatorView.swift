@@ -160,6 +160,10 @@ struct TranscriptionIndicatorView: View {
   }
 }
 
+// SwiftUI previews rely on Xcode's PreviewsMacros plugin, which the SPM
+// executable build cannot load. SPM_BUILD is defined only by Package.swift,
+// so the Xcode build still compiles these previews normally.
+#if !SPM_BUILD
 #Preview("HEX") {
   VStack(spacing: 8) {
     TranscriptionIndicatorView(status: .hidden, meter: .init(averagePower: 0, peakPower: 0))
@@ -170,3 +174,4 @@ struct TranscriptionIndicatorView: View {
   }
   .padding(40)
 }
+#endif

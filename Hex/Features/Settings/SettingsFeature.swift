@@ -238,7 +238,7 @@ struct SettingsFeature {
         return .none
 
       case .task:
-        if let url = Bundle.main.url(forResource: "languages", withExtension: "json"),
+        if let url = Bundle.hexResources.url(forResource: "languages", withExtension: "json"),
           let data = try? Data(contentsOf: url),
           let languages = try? JSONDecoder().decode([Language].self, from: data)
         {
