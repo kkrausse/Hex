@@ -18,6 +18,9 @@ struct TranscriptionIndicatorView: View {
     case recording
     case transcribing
     case prewarming
+    /// The streaming encoder is compiling. Recording works, but cannot insert
+    /// text live until this finishes, so it is worth saying out loud.
+    case loadingModel
   }
 
   var status: Status
@@ -31,7 +34,7 @@ struct TranscriptionIndicatorView: View {
     case .recording:
       return mixedColor(mixedNSColor(.red, with: .black, by: 0.5), with: .red, by: meter.averagePower * 3)
     case .transcribing: return mixedColor(.blue, with: .black, by: 0.5)
-    case .prewarming: return mixedColor(.blue, with: .black, by: 0.5)
+    case .prewarming, .loadingModel: return mixedColor(.blue, with: .black, by: 0.5)
     }
   }
 
@@ -41,7 +44,7 @@ struct TranscriptionIndicatorView: View {
     case .optionKeyPressed: return Color.black
     case .recording: return mixedColor(.red, with: .white, by: 0.1).opacity(0.6)
     case .transcribing: return mixedColor(.blue, with: .white, by: 0.1).opacity(0.6)
-    case .prewarming: return mixedColor(.blue, with: .white, by: 0.1).opacity(0.6)
+    case .prewarming, .loadingModel: return mixedColor(.blue, with: .white, by: 0.1).opacity(0.6)
     }
   }
 
@@ -60,7 +63,7 @@ struct TranscriptionIndicatorView: View {
     case .optionKeyPressed: return Color.clear
     case .recording: return Color.red
     case .transcribing: return transcribeBaseColor
-    case .prewarming: return transcribeBaseColor
+    case .prewarming, .loadingModel: return transcribeBaseColor
     }
   }
 
@@ -70,6 +73,16 @@ struct TranscriptionIndicatorView: View {
 
   var isHidden: Bool {
     status == .hidden
+  }
+
+  private var tooltip: String? {
+    switch status {
+    case .prewarming: return "Model prewarming…"
+    // Named for what the user gets, not for what is happening internally: the
+    // point of showing this is that dictation will not appear as you speak yet.
+    case .loadingModel: return "Loading live dictation…"
+    case .hidden, .optionKeyPressed, .recording, .transcribing: return nil
+    }
   }
 
   @State var transcribeEffect = 0
@@ -138,10 +151,9 @@ struct TranscriptionIndicatorView: View {
           }
         }
       
-      // Show tooltip when prewarming
-      if status == .prewarming {
+      if let message = tooltip {
         VStack(spacing: 4) {
-          Text("Model prewarming...")
+          Text(message)
             .font(.system(size: 12, weight: .medium))
             .foregroundColor(.white)
             .padding(.horizontal, 8)
@@ -171,6 +183,7 @@ struct TranscriptionIndicatorView: View {
     TranscriptionIndicatorView(status: .recording, meter: .init(averagePower: 0.5, peakPower: 0.5))
     TranscriptionIndicatorView(status: .transcribing, meter: .init(averagePower: 0, peakPower: 0))
     TranscriptionIndicatorView(status: .prewarming, meter: .init(averagePower: 0, peakPower: 0))
+    TranscriptionIndicatorView(status: .loadingModel, meter: .init(averagePower: 0, peakPower: 0))
   }
   .padding(40)
 }
