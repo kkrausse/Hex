@@ -150,6 +150,88 @@ actor StreamingParakeetClient {
 		return text.trimmingCharacters(in: .whitespacesAndNewlines)
 	}
 
+	// MARK: - Live streaming session
+
+	/// Opens a live session, replacing any previous one.
+	///
+	/// `onPartial` receives the manager's **cumulative** transcript, not a delta —
+	/// FluidAudio rebuilds the whole string each time tokens are emitted. Turning
+	/// that into insertable deltas is the caller's job, via
+	/// `AppendOnlyTranscriptCursor`.
+	func startSession(
+		modelName: String,
+		onPartial: @escaping @Sendable (String) -> Void
+	) async throws {
+		guard let model = StreamingModel(rawValue: modelName),
+		      loadedModel == model,
+		      let manager
+		else {
+			throw NSError(
+				domain: "StreamingParakeet",
+				code: -6,
+				userInfo: [NSLocalizedDescriptionKey: "Streaming model not loaded"]
+			)
+		}
+		// Decoder state persists across sessions, so a missing reset would decode
+		// this utterance as a continuation of the previous one.
+		try await manager.reset()
+		await manager.setPartialTranscriptCallback(onPartial)
+	}
+
+	/// Feeds captured audio to the decoder and lets it emit any complete windows.
+	func append(_ samples: [Float]) async throws {
+		guard let manager else { return }
+		try await manager.appendAudio(Self.makeBuffer(samples))
+		try await manager.processBufferedAudio()
+	}
+
+	/// Flushes remaining audio and returns the final cumulative transcript.
+	///
+	/// `padMilliseconds` appends silence first. Without it the last word ends
+	/// flush against the final encoder window, where the RNN-T decoder can
+	/// withhold its trailing emissions — during normal speech the decoder always
+	/// has trailing audio, so it never sees this case until the stream stops.
+	func finishSession(padMilliseconds: Int = 400) async throws -> String {
+		guard let manager else { return "" }
+		if padMilliseconds > 0 {
+			let padSamples = [Float](repeating: 0, count: padMilliseconds * 16)
+			try await manager.appendAudio(Self.makeBuffer(padSamples))
+			try await manager.processBufferedAudio()
+		}
+		let text = try await manager.finish()
+		try await manager.reset()
+		return text.trimmingCharacters(in: .whitespacesAndNewlines)
+	}
+
+	/// Abandons the session without producing a transcript.
+	func cancelSession() async {
+		guard let manager else { return }
+		await manager.setPartialTranscriptCallback { _ in }
+		try? await manager.reset()
+	}
+
+	private static func makeBuffer(_ samples: [Float]) -> AVAudioPCMBuffer {
+		// The capture path already converts to this exact format, so the buffer is
+		// handed over without resampling.
+		let format = AVAudioFormat(
+			commonFormat: .pcmFormatFloat32,
+			sampleRate: 16_000,
+			channels: 1,
+			interleaved: false
+		)!
+		let buffer = AVAudioPCMBuffer(
+			pcmFormat: format,
+			frameCapacity: AVAudioFrameCount(max(1, samples.count))
+		)!
+		buffer.frameLength = AVAudioFrameCount(samples.count)
+		if let channel = buffer.floatChannelData, !samples.isEmpty {
+			samples.withUnsafeBufferPointer { source in
+				channel[0].update(from: source.baseAddress!, count: samples.count)
+			}
+		}
+		return buffer
+	}
+
 	/// Removes the cached bundle for this variant and unloads it.
 	func deleteCaches(modelName: String) async throws {
 		guard let model = StreamingModel(rawValue: modelName) else { return }

@@ -42,6 +42,31 @@ In: streaming via `parakeetUnified1120ms` (hardcoded), delta paste, remappings t
 streaming on/off toggle, multi-word remapping lookahead. **The batch path stays fully
 intact** — streaming is added beside it, never replacing it, so upstream merges stay cheap.
 
+### Running it
+
+No Xcode needed. From the repo root:
+
+```bash
+swift build              # ~30s incremental, a few minutes cold
+./.build/debug/HexApp    # runs in the foreground; Ctrl-C or pkill to stop
+```
+
+It is a menu-bar app with no dock icon, so nothing "opens" — look for the
+hexagon in the menu bar (top right). Settings are in that menu.
+
+```bash
+pkill -f "debug/HexApp"                      # stop it
+swift build && ./.build/debug/HexApp         # rebuild and relaunch
+```
+
+Because this is an unsigned dev binary, macOS re-prompts for Microphone,
+Accessibility, and Input Monitoring whenever the executable changes. Setting up a
+stable signing identity would avoid that; until then, expect to re-authorise in
+System Settings → Privacy & Security after some rebuilds.
+
+`swift run HexApp` also works but swallows the app's stdout logging; prefer
+launching the binary directly.
+
 ### Build constraint
 
 This machine has **Command Line Tools only, no Xcode**, so `xcodebuild -scheme Hex`

@@ -31,6 +31,8 @@ struct RecordingClient {
   var stopRecording: @Sendable () async -> RecordingStopResult = { .ignored(.noActiveRecording) }
   var requestMicrophoneAccess: @Sendable () async -> Bool = { false }
   var observeAudioLevel: @Sendable () async -> AsyncStream<Meter> = { AsyncStream { _ in } }
+  /// Live 16 kHz mono Float32 buffers while a recording is active, for streaming ASR.
+  var observeSamples: @Sendable () async -> AsyncStream<[Float]> = { AsyncStream { _ in } }
   var getAvailableInputDevices: @Sendable () async -> [AudioInputDevice] = { [] }
   var getDefaultInputDeviceName: @Sendable () async -> String? = { nil }
   var warmUpRecorder: @Sendable () async -> Void = {}
@@ -48,6 +50,7 @@ extension RecordingClient: DependencyKey {
       stopRecording: { await live.stopRecording() },
       requestMicrophoneAccess: { await live.requestMicrophoneAccess() },
       observeAudioLevel: { await live.observeAudioLevel() },
+      observeSamples: { await live.observeSamples() },
       getAvailableInputDevices: { await live.getAvailableInputDevices() },
       getDefaultInputDeviceName: { await live.getDefaultInputDeviceName() },
       warmUpRecorder: { await live.warmUpRecorder() },
@@ -392,9 +395,16 @@ actor RecordingClientLive {
     AVLinearPCMIsNonInterleaved: false,
   ]
   private let (meterStream, meterContinuation) = AsyncStream<Meter>.makeStream()
+  // Unbounded on purpose: dropping capture buffers would silently corrupt the
+  // streaming transcript. The consumer hands each buffer straight to FluidAudio,
+  // which appends to its own internal buffer, so this should not back up.
+  private let (samplesStream, samplesContinuation) = AsyncStream<[Float]>.makeStream(
+    bufferingPolicy: .unbounded
+  )
   private var meterTask: Task<Void, Never>?
   private lazy var captureController = SuperFastCaptureController(
     meterContinuation: meterContinuation,
+    samplesContinuation: samplesContinuation,
     onEngineConfigurationChange: { [weak self] generation in
       Task {
         await self?.enqueueCaptureEnvironmentChange(
@@ -1650,6 +1660,10 @@ actor RecordingClientLive {
   func stopMeterTask() {
     meterTask?.cancel()
     meterTask = nil
+  }
+
+  func observeSamples() -> AsyncStream<[Float]> {
+    samplesStream
   }
 
   func observeAudioLevel() -> AsyncStream<Meter> {
