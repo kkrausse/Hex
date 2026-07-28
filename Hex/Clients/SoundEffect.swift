@@ -140,7 +140,7 @@ actor SoundEffectsClientLive {
   private var isSetup = false
 
   private func loadSound(_ soundEffect: SoundEffect) {
-    guard let url = Bundle.main.url(
+    guard let url = Bundle.hexResources.url(
       forResource: soundEffect.fileName,
       withExtension: soundEffect.fileExtension
     ) else {

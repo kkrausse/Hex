@@ -1,6 +1,5 @@
 import ComposableArchitecture
 import Inject
-import Sparkle
 import AppKit
 import SwiftUI
 

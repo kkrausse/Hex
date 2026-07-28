@@ -90,8 +90,8 @@ public struct CuratedModelInfo: Equatable, Identifiable, Codable {
 // Convenience helper for loading the bundled models.json once.
 private enum CuratedModelLoader {
 	private static let bundledModels: [CuratedModelInfo] = {
-		guard let url = Bundle.main.url(forResource: "models", withExtension: "json") ??
-			Bundle.main.url(forResource: "models", withExtension: "json", subdirectory: "Data")
+		guard let url = Bundle.hexResources.url(forResource: "models", withExtension: "json") ??
+			Bundle.hexResources.url(forResource: "models", withExtension: "json", subdirectory: "Data")
 		else {
 			assertionFailure("models.json not found in bundle")
 			return []
@@ -271,8 +271,17 @@ public struct ModelDownloadFeature {
 					let recommendedSupport = try await recommendedSupportTask
 					let names = try await availableNamesTask
 					let recommended = recommendedSupport.default
+					// Curated Parakeet and streaming models are not in WhisperKit's
+					// HuggingFace listing, so append them here. Injecting them later
+					// (as `modelsLoaded` does for Parakeet) hardcodes isDownloaded to
+					// false, which leaves an already-cached model permanently showing
+					// "Not downloaded". Going through the task group gives each one a
+					// real isModelDownloaded check.
+					let curatedNames = StreamingModel.allCases.map(\.identifier)
+						+ ParakeetModel.allCases.map(\.identifier)
+					let allNames = names + curatedNames.filter { !names.contains($0) }
 					let infos = try await withThrowingTaskGroup(of: ModelInfo.self) { group -> [ModelInfo] in
-						for name in names {
+						for name in allNames {
 							group.addTask {
 								ModelInfo(
 									name: name,
@@ -297,6 +306,11 @@ public struct ModelDownloadFeature {
 			// Ensure our curated Parakeet options are visible even if WhisperKit doesn't list them
 			var availablePlus = available
 			for model in ParakeetModel.allCases.reversed() {
+				if !availablePlus.contains(where: { $0.name == model.identifier }) {
+					availablePlus.insert(ModelInfo(name: model.identifier, isDownloaded: false), at: 0)
+				}
+			}
+			for model in StreamingModel.allCases.reversed() {
 				if !availablePlus.contains(where: { $0.name == model.identifier }) {
 					availablePlus.insert(ModelInfo(name: model.identifier, isDownloaded: false), at: 0)
 				}

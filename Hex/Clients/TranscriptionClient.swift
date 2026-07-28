@@ -73,6 +73,8 @@ actor TranscriptionClientLive {
   /// The name of the currently loaded model, if any.
   private var currentModelName: String?
   private var parakeet: ParakeetClient = ParakeetClient()
+  /// Streaming models are handled by a sibling client; see StreamingParakeetClient.
+  private var streamingParakeet: StreamingParakeetClient = StreamingParakeetClient()
 
   /// The base folder under which we store model data (e.g., ~/Library/Application Support/...).
   private lazy var modelsBaseFolder: URL = {
@@ -88,6 +90,14 @@ actor TranscriptionClientLive {
   /// Ensures the given `variant` model is downloaded and loaded, reporting
   /// overall progress (0%–50% for downloading, 50%–100% for loading).
   func downloadAndLoadModel(variant: String, progressCallback: @escaping (Progress) -> Void) async throws {
+    // Streaming models download and load through FluidAudio's streaming manager,
+    // which reports real byte-weighted progress rather than the polled directory
+    // size the batch Parakeet path has to fall back on.
+    if StreamingModel.isStreaming(variant) {
+      try await streamingParakeet.ensureLoaded(modelName: variant, progress: progressCallback)
+      currentModelName = variant
+      return
+    }
     // If Parakeet, use Parakeet client path
     if isParakeet(variant) {
       try await parakeet.ensureLoaded(modelName: variant, progress: progressCallback)
@@ -140,6 +150,11 @@ actor TranscriptionClientLive {
 
   /// Deletes a model from disk if it exists
   func deleteModel(variant: String) async throws {
+    if StreamingModel.isStreaming(variant) {
+      try await streamingParakeet.deleteCaches(modelName: variant)
+      if currentModelName == variant { currentModelName = nil }
+      return
+    }
     if isParakeet(variant) {
       try await parakeet.deleteCaches(modelName: variant)
       if currentModelName == variant { unloadCurrentModel() }
@@ -167,6 +182,11 @@ actor TranscriptionClientLive {
   /// Returns `true` if the model is already downloaded to the local folder.
   /// Performs a thorough check to ensure the model files are actually present and usable.
   func isModelDownloaded(_ modelName: String) async -> Bool {
+    if StreamingModel.isStreaming(modelName) {
+      let available = await streamingParakeet.isModelAvailable(modelName)
+      parakeetLogger.debug("Streaming model available? \(available)")
+      return available
+    }
     if isParakeet(modelName) {
       let available = await parakeet.isModelAvailable(modelName)
       parakeetLogger.debug("Parakeet available? \(available)")
@@ -228,6 +248,13 @@ actor TranscriptionClientLive {
     progressCallback: @escaping (Progress) -> Void
   ) async throws -> String {
     let startAll = Date()
+    if StreamingModel.isStreaming(model) {
+      transcriptionLogger.notice("Transcribing with streaming model=\(model) file=\(url.lastPathComponent)")
+      try await downloadAndLoadModel(variant: model, progressCallback: progressCallback)
+      let text = try await streamingParakeet.transcribe(url, modelName: model)
+      transcriptionLogger.info("Streaming transcription took \(String(format: "%.2f", Date().timeIntervalSince(startAll)))s")
+      return text
+    }
     if isParakeet(model) {
       transcriptionLogger.notice("Transcribing with Parakeet model=\(model) file=\(url.lastPathComponent)")
       let startLoad = Date()

@@ -1,8 +1,10 @@
 import Combine
 import ComposableArchitecture
 import Inject
-import Sparkle
 import SwiftUI
+
+#if canImport(Sparkle)
+import Sparkle
 
 @Observable
 @MainActor
@@ -18,7 +20,7 @@ final class CheckForUpdatesViewModel {
 	// feed (see Info.plist), and starting the updater without one makes Sparkle
 	// throw SUNoFeedURLError and surface an alert on every launch. With
 	// startingUpdater: false, `canCheckForUpdates` stays false and the menu item
-	// below stays disabled. Flip this back only alongside a real appcast.
+	// stays disabled. Flip this back only alongside a real appcast.
 	let controller = SPUStandardUpdaterController(
 		startingUpdater: false,
 		updaterDelegate: nil,
@@ -33,6 +35,27 @@ final class CheckForUpdatesViewModel {
 		controller.updater.checkForUpdates()
 	}
 }
+
+#else
+
+/// Stand-in used by the SPM executable build, where Sparkle is not linked.
+///
+/// Sparkle needs a real app bundle for its XPC installer service, and a bare
+/// SPM executable has none. Since this fork disables auto-update regardless,
+/// the SPM build simply drops the dependency and keeps the same surface so the
+/// call sites in `HexApp` and `AboutView` compile unchanged.
+@Observable
+@MainActor
+final class CheckForUpdatesViewModel {
+	static let shared = CheckForUpdatesViewModel()
+
+	/// Always false, so every "Check for Updates" affordance renders disabled.
+	var canCheckForUpdates = false
+
+	func checkForUpdates() {}
+}
+
+#endif
 
 struct CheckForUpdatesView: View {
 	@State var viewModel = CheckForUpdatesViewModel.shared

@@ -1,7 +1,6 @@
 import ComposableArchitecture
 import Inject
 import SwiftUI
-import Sparkle
 
 struct AboutView: View {
     @ObserveInjection var inject

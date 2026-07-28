@@ -331,6 +331,10 @@ struct TranscriptView: View {
 	}
 }
 
+// SwiftUI previews rely on Xcode's PreviewsMacros plugin, which the SPM
+// executable build cannot load. SPM_BUILD is defined only by Package.swift,
+// so the Xcode build still compiles these previews normally.
+#if !SPM_BUILD
 #Preview {
 	TranscriptView(
 		transcript: Transcript(timestamp: Date(), text: "Hello, world!", audioPath: URL(fileURLWithPath: "/Users/langton/Downloads/test.m4a"), duration: 1.0),
@@ -340,6 +344,7 @@ struct TranscriptView: View {
 		onDelete: {}
 	)
 }
+#endif
 
 struct HistoryView: View {
 	@ObserveInjection var inject
