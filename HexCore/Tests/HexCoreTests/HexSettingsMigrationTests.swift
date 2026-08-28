@@ -37,6 +37,7 @@ struct HexSettingsMigrationTests {
 		#expect(decoded.hasCompletedStorageMigration == true)
 		#expect(!decoded.lowercaseTranscripts)
 		#expect(!decoded.removePunctuation)
+		#expect(!decoded.lowercaseFirstLetter)
 	}
 
 	@Test

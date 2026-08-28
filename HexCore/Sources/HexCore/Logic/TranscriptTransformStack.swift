@@ -19,19 +19,26 @@ public struct TranscriptTransformStack: Sendable {
 	public let remappings: [WordRemapping]
 	public let lowercase: Bool
 	public let removePunctuation: Bool
+	/// Lowercase the first letter of the whole transcript. Unlike every other
+	/// stage this is position *dependent*, so `apply` deliberately does not run
+	/// it: the batch path uses `applyToWholeTranscript`, and the streaming path
+	/// lets `StreamingTranscriptPipeline` do it once, on the first released span.
+	public let lowercaseFirstLetter: Bool
 
 	public init(
 		removalsEnabled: Bool,
 		removals: [WordRemoval],
 		remappings: [WordRemapping],
 		lowercase: Bool,
-		removePunctuation: Bool
+		removePunctuation: Bool,
+		lowercaseFirstLetter: Bool = false
 	) {
 		self.removalsEnabled = removalsEnabled
 		self.removals = removals
 		self.remappings = remappings
 		self.lowercase = lowercase
 		self.removePunctuation = removePunctuation
+		self.lowercaseFirstLetter = lowercaseFirstLetter
 	}
 
 	/// A stack that changes nothing, for the scratchpad case where the user is
@@ -44,8 +51,22 @@ public struct TranscriptTransformStack: Sendable {
 		removePunctuation: false
 	)
 
+	/// The position-independent stages only. Safe to run on any span of the
+	/// transcript; what the streaming path calls per released word.
 	public func apply(_ text: String) -> String {
 		apply(text, onStageChange: { _ in })
+	}
+
+	/// Every stage, including the position-dependent first-letter one. Only
+	/// correct when `text` is the complete transcript.
+	public func applyToWholeTranscript(_ text: String, onStageChange: (Stage) -> Void = { _ in }) -> String {
+		var output = apply(text, onStageChange: onStageChange)
+		if lowercaseFirstLetter {
+			let lowered = TranscriptFormattingApplier.lowercasingFirstLetter(output)
+			if lowered != output { onStageChange(.formatting) }
+			output = lowered
+		}
+		return output
 	}
 
 	/// - Parameter onStageChange: Called with each stage that actually altered the

@@ -163,7 +163,7 @@ actor StreamingDictationLive {
 		sawEndOfUtterance = false
 		await inserter.begin()
 		let consumer = Task { [inserter] in
-			var pipeline = StreamingTranscriptPipeline()
+			var pipeline = StreamingTranscriptPipeline(lowercaseFirstLetter: transform.lowercaseFirstLetter)
 			for await update in updates {
 				let outcome: StreamingTranscriptPipeline.Outcome
 				switch update {

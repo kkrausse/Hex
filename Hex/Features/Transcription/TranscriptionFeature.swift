@@ -426,7 +426,8 @@ private extension TranscriptionFeature {
       removals: state.hexSettings.wordRemovals,
       remappings: state.hexSettings.wordRemappings,
       lowercase: state.hexSettings.lowercaseTranscripts,
-      removePunctuation: state.hexSettings.removePunctuation
+      removePunctuation: state.hexSettings.removePunctuation,
+      lowercaseFirstLetter: state.hexSettings.lowercaseFirstLetter
     )
   }
 
@@ -614,7 +615,7 @@ private extension TranscriptionFeature {
     // cannot produce different text for the same speech.
     let remappings = state.hexSettings.wordRemappings
     let removals = state.hexSettings.wordRemovals
-    let modifiedResult = streamingTransformStack(&state).apply(result) { stage in
+    let modifiedResult = streamingTransformStack(&state).applyToWholeTranscript(result) { stage in
       switch stage {
       case .removals:
         let enabledRemovalCount = removals.filter(\.isEnabled).count
