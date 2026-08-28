@@ -116,6 +116,7 @@ struct SettingsFeature {
     case setRemappingScratchpadFocused(Bool)
     case setLowercaseTranscripts(Bool)
     case setRemovePunctuation(Bool)
+    case setLowercaseFirstLetter(Bool)
   }
 
   @Dependency(\.keyEventMonitor) var keyEventMonitor
@@ -414,6 +415,10 @@ struct SettingsFeature {
 
       case let .setRemovePunctuation(enabled):
         state.$hexSettings.withLock { $0.removePunctuation = enabled }
+        return .none
+
+      case let .setLowercaseFirstLetter(enabled):
+        state.$hexSettings.withLock { $0.lowercaseFirstLetter = enabled }
         return .none
 
       case .startSettingPasteLastTranscriptHotkey:

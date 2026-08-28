@@ -187,6 +187,19 @@ struct WordRemappingsView: View {
 						)
 					)
 					.toggleStyle(.switch)
+
+					Divider()
+						.frame(height: 22)
+
+					Toggle(
+						"Lowercase first letter",
+						isOn: Binding(
+							get: { store.hexSettings.lowercaseFirstLetter },
+							set: { store.send(.setLowercaseFirstLetter($0)) }
+						)
+					)
+					.toggleStyle(.switch)
+					.help("Only the first letter of each dictation. Keeps capitals inside the text.")
 					Spacer()
 				}
 				.padding(.vertical, 4)
@@ -255,6 +268,9 @@ struct WordRemappingsView: View {
 			lowercase: store.hexSettings.lowercaseTranscripts,
 			removePunctuation: store.hexSettings.removePunctuation
 		)
+		if store.hexSettings.lowercaseFirstLetter {
+			output = TranscriptFormattingApplier.lowercasingFirstLetter(output)
+		}
 		return output
 	}
 }

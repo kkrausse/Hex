@@ -29,13 +29,22 @@ public struct StreamingTranscriptPipeline: Sendable {
 	private var cursor = AppendOnlyTranscriptCursor()
 	private var transformer = StreamingTextTransformer()
 
+	/// Whether the first letter of the utterance should be lowercased. Applied
+	/// here rather than in the per-span transform because the transform runs on
+	/// every released word and would lowercase the start of each one.
+	private let lowercaseFirstLetter: Bool
+	/// Set once a letter has been released, so the lowering fires exactly once.
+	private var hasReleasedALetter = false
+
 	/// Everything this pipeline has released for insertion, concatenated.
 	///
 	/// This — not the recognizer's transcript — is what belongs in history, so
 	/// the entry matches what the user is looking at in their document.
 	public private(set) var insertedText = ""
 
-	public init() {}
+	public init(lowercaseFirstLetter: Bool = false) {
+		self.lowercaseFirstLetter = lowercaseFirstLetter
+	}
 
 	/// Text received but not yet released, always at most one partial word.
 	public var pendingText: String { transformer.pendingText }
@@ -96,9 +105,17 @@ public struct StreamingTranscriptPipeline: Sendable {
 		cursor.reset()
 		transformer.reset()
 		insertedText = ""
+		hasReleasedALetter = false
 	}
 
 	private mutating func record(_ text: String, diagnostic: String? = nil) -> Outcome {
+		var text = text
+		if !hasReleasedALetter, text.contains(where: \.isLetter) {
+			hasReleasedALetter = true
+			if lowercaseFirstLetter {
+				text = TranscriptFormattingApplier.lowercasingFirstLetter(text)
+			}
+		}
 		insertedText += text
 		return Outcome(textToInsert: text, divergenceDiagnostic: diagnostic)
 	}
