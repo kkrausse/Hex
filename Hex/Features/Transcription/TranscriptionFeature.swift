@@ -362,16 +362,12 @@ private extension TranscriptionFeature {
     }
     transcriptionFeatureLogger.notice("Recording started at \(startTime.ISO8601Format())")
 
-    // Live streaming needs the capture engine's sample tap, which only exists in
-    // super fast mode. With it off the recording still happens — it just takes
-    // the batch path at the end, exactly as it does for any non-streaming model.
+    // Live streaming reads the capture engine's sample tap, which runs in both
+    // modes: standard just starts the engine cold with no pre-roll, so the
+    // first syllable can miss the live decoder. The batch path has that same
+    // hole, so there is no reason to gate streaming on the toggle.
     let model = state.hexSettings.selectedModel
-    let wantsStreaming = StreamingModel.isStreaming(model) && state.hexSettings.superFastModeEnabled
-    if StreamingModel.isStreaming(model), !state.hexSettings.superFastModeEnabled {
-      transcriptionFeatureLogger.notice(
-        "Streaming model selected but super fast mode is off; using the batch path for this recording"
-      )
-    }
+    let wantsStreaming = StreamingModel.isStreaming(model)
     state.isStreamingSession = wantsStreaming
     let transformStack = streamingTransformStack(&state)
     let keepTranscriptOnClipboard = state.hexSettings.copyToClipboard

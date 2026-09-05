@@ -76,9 +76,10 @@ whole design is built around.
   someone else's document and Hex has no claim on it. A history entry is still
   written so the text is recoverable from Hex. The audio is not: the cancel path
   deletes it.
-- **Streaming requires super fast mode.** The sample tap only exists on the
-  capture-engine path. With it off, a streaming model silently takes the batch
-  path. Logged, not surfaced.
+- **Streaming works with super fast mode on or off.** The sample tap runs on
+  the capture-engine path in both modes; standard just starts the engine cold
+  with no pre-roll, so the opening syllable can miss the live decoder — the
+  same hole the batch path already has there.
 - **Streaming always uses the clipboard transport**, ignoring `useClipboardPaste`.
   The AppleScript typing fallback is far too slow per word. Unicode CGEvent
   injection (`keyboardSetUnicodeString`) is the real answer if this matters.
