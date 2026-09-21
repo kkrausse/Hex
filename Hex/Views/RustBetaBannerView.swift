@@ -66,6 +66,7 @@ struct RustBetaBannerView: View {
 	}
 }
 
+#if !SPM_BUILD
 #Preview {
 	Form {
 		Section {
@@ -75,3 +76,4 @@ struct RustBetaBannerView: View {
 	.formStyle(.grouped)
 	.frame(width: 460, height: 210)
 }
+#endif
