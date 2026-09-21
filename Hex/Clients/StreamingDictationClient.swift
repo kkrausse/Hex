@@ -31,7 +31,8 @@ struct StreamingDictationResult: Equatable, Sendable {
 /// Drives live dictation: recognizer session in, text in the user's document out.
 ///
 /// Sits above `StreamingParakeetClient` (which owns the FluidAudio decoder) and
-/// `IncrementalTextInserter` (which owns the clipboard transport), and owns the
+/// `IncrementalTextInserter` (the clipboard transport) or `PasteboardClient` (the
+/// keystroke transport, when clipboard paste is off), and owns the
 /// one thing neither can: the ordering guarantee. Partial transcripts arrive on
 /// a callback, so they are funnelled through a single `AsyncStream` consumed by
 /// a single task. Every insertion therefore happens in the order the recognizer
@@ -95,6 +96,9 @@ actor StreamingDictationLive {
 		let continuation: AsyncStream<Update>.Continuation
 		let consumer: Task<String, Never>
 		let keepTranscriptOnClipboard: Bool
+		/// False when the fragments were typed through `PasteboardClient`, in which
+		/// case the clipboard inserter was never opened and must not be closed.
+		let usedClipboard: Bool
 	}
 
 	private enum Update: Sendable {
@@ -104,6 +108,8 @@ actor StreamingDictationLive {
 
 	private let asr = StreamingParakeetClient.shared
 	private let inserter = IncrementalTextInserter()
+	@Dependency(\.pasteboard) private var pasteboard
+	@Shared(.hexSettings) private var hexSettings: HexSettings
 	private var session: Session?
 	/// Set when the recorder's marker reaches the tap consumer. Latched rather
 	/// than signalled, because the marker routinely arrives before anyone waits
@@ -161,8 +167,24 @@ actor StreamingDictationLive {
 		}
 
 		sawEndOfUtterance = false
-		await inserter.begin()
-		let consumer = Task { [inserter] in
+		// Same switch the batch path makes in `PasteboardClient.paste`. With paste
+		// off, each fragment goes through that client and is typed as keystrokes;
+		// terminals treat a Cmd+V as a bracketed paste and render every fragment
+		// as its own block, which typing avoids. The clipboard inserter exists
+		// only because the batch client's per-call snapshot/restore is too heavy
+		// per word, so it is bypassed entirely here.
+		let useClipboardPaste = hexSettings.useClipboardPaste
+		let insert: @Sendable (String) async -> Bool
+		if useClipboardPaste {
+			await inserter.begin()
+			insert = { [inserter] in await inserter.insert($0) }
+		} else {
+			insert = { [pasteboard] in
+				await pasteboard.paste($0)
+				return true
+			}
+		}
+		let consumer = Task {
 			var pipeline = StreamingTranscriptPipeline(lowercaseFirstLetter: transform.lowercaseFirstLetter)
 			for await update in updates {
 				let outcome: StreamingTranscriptPipeline.Outcome
@@ -176,7 +198,7 @@ actor StreamingDictationLive {
 					dictationLogger.error("Streaming transcript diverged, inserting nothing: \(diagnostic, privacy: .private)")
 				}
 				guard !outcome.isEmpty else { continue }
-				let inserted = await inserter.insert(outcome.textToInsert)
+				let inserted = await insert(outcome.textToInsert)
 				if !inserted {
 					dictationLogger.error("Dropping a dictation delta that could not be inserted")
 				}
@@ -187,7 +209,8 @@ actor StreamingDictationLive {
 		session = Session(
 			continuation: continuation,
 			consumer: consumer,
-			keepTranscriptOnClipboard: keepTranscriptOnClipboard
+			keepTranscriptOnClipboard: keepTranscriptOnClipboard,
+			usedClipboard: useClipboardPaste
 		)
 		dictationLogger.notice("Streaming dictation session started model=\(modelName)")
 	}
@@ -243,7 +266,9 @@ actor StreamingDictationLive {
 		session.continuation.finish()
 		let insertedText = await session.consumer.value
 
-		await inserter.end(leaving: session.keepTranscriptOnClipboard ? insertedText : nil)
+		if session.usedClipboard {
+			await inserter.end(leaving: session.keepTranscriptOnClipboard ? insertedText : nil)
+		}
 		dictationLogger.notice("Streaming dictation session finished, inserted \(insertedText.count) characters")
 		return .init(insertedText: insertedText, rawTranscript: rawTranscript)
 	}
@@ -256,7 +281,9 @@ actor StreamingDictationLive {
 		session.continuation.finish()
 		let insertedText = await session.consumer.value
 		await asr.cancelSession()
-		await inserter.end(leaving: session.keepTranscriptOnClipboard ? insertedText : nil)
+		if session.usedClipboard {
+			await inserter.end(leaving: session.keepTranscriptOnClipboard ? insertedText : nil)
+		}
 		dictationLogger.notice("Streaming dictation session cancelled after \(insertedText.count) characters")
 		return .init(insertedText: insertedText, rawTranscript: "")
 	}

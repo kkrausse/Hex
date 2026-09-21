@@ -92,6 +92,8 @@ extension DependencyValues {
 }
 
 class KeyEventMonitorClientLive {
+  fileprivate static let ownProcessID = Int64(ProcessInfo.processInfo.processIdentifier)
+
   private var eventTapPort: CFMachPort?
   private var runLoopSource: CFRunLoopSource?
   private var continuations: [UUID: @Sendable (KeyEvent) -> Bool] = [:]
@@ -437,6 +439,14 @@ class KeyEventMonitorClientLive {
 
           if type == .tapDisabledByUserInput || type == .tapDisabledByTimeout {
             hotKeyClientLive.handleTapDisabledEvent(type)
+            return Unmanaged.passUnretained(cgEvent)
+          }
+
+          // Hex's own synthetic events (Cmd+V for paste, typed dictation
+          // characters) come back through this tap. A typed key-up carries no
+          // modifier flags, which the processor reads as the hotkey being
+          // released mid-dictation. Pass them straight through.
+          if cgEvent.getIntegerValueField(.eventSourceUnixProcessID) == KeyEventMonitorClientLive.ownProcessID {
             return Unmanaged.passUnretained(cgEvent)
           }
 

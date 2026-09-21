@@ -85,7 +85,7 @@ struct PasteboardClientLive {
         if hexSettings.useClipboardPaste {
             await pasteWithClipboard(text)
         } else {
-            simulateTypingWithAppleScript(text)
+            typeWithUnicodeEvents(text)
         }
     }
     
@@ -330,13 +330,44 @@ struct PasteboardClientLive {
         try await Task.sleep(nanoseconds: UInt64(milliseconds) * 1_000_000)
     }
     
-    func simulateTypingWithAppleScript(_ text: String) {
-        let escapedText = text.replacingOccurrences(of: "\"", with: "\\\"")
-        let script = NSAppleScript(source: "tell application \"System Events\" to keystroke \"\(escapedText)\"")
-        var error: NSDictionary?
-        script?.executeAndReturnError(&error)
-        if let error = error {
-            pasteboardLogger.error("Error executing AppleScript typing fallback: \(error)")
+    /// Types `text` as synthetic key events carrying the characters directly.
+    ///
+    /// Each event's modifier flags are set to none. The dictation hotkey can be
+    /// a bare modifier that is physically held for the whole recording, and an
+    /// AppleScript `keystroke` inherits held modifiers — with Command down,
+    /// typing "seems" into a browser fires Cmd+S, Cmd+E, Cmd+M. Explicit flags
+    /// on a CGEvent override the physical state, exactly as the Cmd+V path
+    /// relies on.
+    ///
+    /// Unlike a paste, typed characters are never wrapped in bracketed-paste
+    /// markers, so terminal apps see them as ordinary input.
+    func typeWithUnicodeEvents(_ text: String) {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        let units = Array(text.utf16)
+        // keyboardSetUnicodeString accepts at most 20 UTF-16 units per event.
+        let maxUnitsPerEvent = 20
+        var start = 0
+        while start < units.count {
+            var end = min(start + maxUnitsPerEvent, units.count)
+            // Never split a surrogate pair across two events.
+            if end < units.count, UTF16.isLeadSurrogate(units[end - 1]) {
+                end -= 1
+            }
+            var chunk = Array(units[start..<end])
+            guard
+                let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+                let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+            else {
+                pasteboardLogger.error("Could not create key events for typing fallback")
+                return
+            }
+            keyDown.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
+            keyUp.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
+            keyDown.flags = []
+            keyUp.flags = []
+            keyDown.post(tap: .cghidEventTap)
+            keyUp.post(tap: .cghidEventTap)
+            start = end
         }
     }
 
