@@ -86,6 +86,59 @@ whole design is built around.
   whole transcript by the batch path and per released word by the streaming path,
   so the two cannot drift.
 
+## The remote backend
+
+Optional, off by default: Settings → Live Dictation Server. With the switch on
+and a usable address, live sessions run against a dictation server instead of
+FluidAudio. Protocol: `docs/protocol.md` in the sibling `dictation-server` repo
+(v1 — `start`, wait for `ready`, binary Float32 frames, `stop`, `final`, `done`).
+The server runs the same Parakeet Unified 1120 ms model, so its cumulative
+partials mean what FluidAudio's do.
+
+```
+StreamingDictationLive.consumeSamples
+  → RemoteStreamingClient.append()        queue, then 80 ms frames over WSS
+  → partial callback (cumulative text)    same stream, same pipeline as above
+```
+
+Only the recognizer is swapped (`StreamingDictationBackend`). The pipeline, the
+transform stack, and the inserter are the same objects as the on-device path.
+
+- **It is a switch, not a model entry.** The server cannot be downloaded, loaded,
+  or deleted, which is everything the model list does. And the selected model
+  keeps a job: it transcribes the clip when the server cannot. The switch takes
+  precedence over a selected streaming model.
+- **`startSession` returns before the socket is open**, for the same reason
+  on-device `start()` never waits for a load: the microphone opens after it
+  returns. Audio captured before `ready` queues in the client and is sent from
+  the first sample once the server is ready. No resampling — the tap is already
+  16 kHz mono Float32, the wire format.
+- **At most one second unacknowledged.** The server terminates a recording with
+  two seconds queued. The client sends 5,120-byte frames and holds the rest back
+  until acks arrive. Nothing is dropped; the only cap is the server's own
+  five-minute recording limit, past which the session fails.
+- **Failure is reported at the end, by `finish()`.** An unreachable or `busy`
+  server is only known after the session "opened", so it is latched and comes
+  back as `StreamingDictationResult.failure`.
+  - *Nothing inserted yet:* the clip takes the batch path with the selected
+    on-device model, if one is already downloaded. Indicator: "Server unavailable
+    — transcribing on this Mac".
+  - *Text already inserted:* insertion stops, the held-back word is dropped,
+    nothing is retracted, nothing is replayed — the clip cannot be transcribed
+    again without duplicating what landed. Indicator: "Dictation server failed —
+    dictation stopped".
+- **Timeouts:** 8 s to `ready` (120 s once the server says `loading`), 15 s of
+  silence while audio or the final is outstanding. On release, a session that is
+  still not ready gets 2 s more, or none if the server is loading — the on-device
+  fallback is quicker than a cold server.
+- **The socket is not closed after `final`.** The server sends `done` only after
+  resetting its decoder; the client lets that arrive (5 s cap) so the next
+  recording does not meet a `busy` server.
+
+Not done: the failure is only shown when the recording ends, not at the moment
+the server drops; no reconnect or replay; no "test connection" button — use
+`curl <address>/v1/status`.
+
 ## Remaining
 
 1. **Settings UI.** Latency-tier picker, streaming on/off toggle, live-transcript

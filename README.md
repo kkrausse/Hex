@@ -18,9 +18,9 @@ This fork adds **live streaming dictation**: text pasted incrementally *while yo
 speak*, using FluidAudio's Parakeet Unified streaming model. Upstream is
 batch-only — record, release, transcribe once, paste once.
 
-**Status:** the streaming model loads and transcribes, but the live incremental
-path is not finished yet, so it still pastes once at the end. See
-[`docs/streaming-next.md`](docs/streaming-next.md) for exactly what remains.
+**Status:** live dictation works. With a Parakeet Streaming model selected, words
+are pasted into the focused app about one word behind your voice. See
+[`docs/streaming-next.md`](docs/streaming-next.md) for how it works and what remains.
 
 Auto-update is disabled on purpose. Left enabled, this build would update itself
 back to an upstream release and silently discard the fork.
@@ -49,6 +49,24 @@ signing identity would avoid that.
 
 > `swift run HexApp` also works, but swallows the app's stdout logging — prefer
 > launching the binary directly.
+
+### Dictating through a server
+
+Live dictation can run against your own dictation server instead of the on-device
+model — useful when another machine has the faster GPU. Settings → **Live
+Dictation Server**: turn on *Dictate through a server* and enter the server's
+address (`https://host:9876`). Off by default.
+
+- The server speaks "streaming dictation protocol v1" (`docs/protocol.md` in the
+  `dictation-server` repo): `WSS /v1/stream`, 16 kHz mono Float32 in, cumulative
+  partials out. `curl https://host:9876/v1/status` tells you whether it is up.
+- Needs Super Fast Mode, like on-device streaming. No model has to be downloaded
+  on the Mac, but the model selected under Transcription Model is the fallback:
+  if the server is unreachable or busy, the recording is transcribed with it and
+  pasted once.
+- One recording at a time per server, five minutes per recording. If the server
+  drops out after text has already been pasted, dictation stops there — nothing
+  is retracted and the rest is not replayed.
 
 ### Tests
 
