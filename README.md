@@ -29,12 +29,19 @@ back to an upstream release and silently discard the fork.
 
 This fork adds a `Package.swift` that builds the app as a plain SPM executable,
 alongside the untouched `Hex.xcodeproj`. It requires Swift 6.1 or newer.
-Xcode 16.2 includes Swift 6.0.3, which is too old for the pinned Composable
-Architecture dependency.
 
-If `swift --version` reports an older version, install the standalone toolchain
-with [Swiftly](https://github.com/swiftlang/swiftly). This is much smaller than
-installing a new Xcode release:
+Xcode 27 ships Swift 6.4, which is enough: build with Xcode's own compiler. If
+Swiftly's shims come first on your `PATH`, call it explicitly as
+`/usr/bin/swift build`.
+
+Do not pair a standalone toolchain older than the installed Xcode with that
+Xcode's SDK. Swift 6.3.3 from Swiftly against the Xcode 27 SDK fails while
+compiling package manifests with `unknown argument: '-target-arch-variant'` and
+signal 11. The repository therefore no longer carries a `.swift-version`.
+
+Only on an Xcode whose Swift is older than 6.1 (Xcode 16.2 has 6.0.3, too old
+for the pinned Composable Architecture) install a standalone toolchain with
+[Swiftly](https://github.com/swiftlang/swiftly):
 
 ```bash
 brew install swiftly
@@ -44,47 +51,6 @@ swiftly install 6.3.3
 swiftly use 6.3.3
 swift --version
 ```
-
-The repository's `.swift-version` selects Swift 6.3.3 for Swiftly users. It
-does not replace the installed macOS SDK.
-
-```bash
-swift build              # ~30s incremental, a few minutes cold
-./.build/debug/HexApp    # runs in the foreground
-```
-
-It's a **menu-bar app with no dock icon**, so nothing visibly opens — look for the
-hexagon at the top right of your screen. Settings live in that menu.
-
-```bash
-pkill -f "debug/HexApp"                        # stop it
-pkill -f "debug/HexApp"; swift build && ./.build/debug/HexApp   # rebuild + relaunch
-```
-
-Because this is an unsigned dev binary, macOS re-prompts for Microphone,
-Accessibility, and Input Monitoring whenever the executable changes. A stable
-signing identity would avoid that.
-
-> `swift run HexApp` also works, but swallows the app's stdout logging — prefer
-> launching the binary directly.
-
-### Dictating through a server
-
-Live dictation can run against your own dictation server instead of the on-device
-model — useful when another machine has the faster GPU. Settings → **Live
-Dictation Server**: turn on *Dictate through a server* and enter the server's
-address (`https://host:9876`). Off by default.
-
-- The server speaks "streaming dictation protocol v1" (`docs/protocol.md` in the
-  `dictation-server` repo): `WSS /v1/stream`, 16 kHz mono Float32 in, cumulative
-  partials out. `curl https://host:9876/v1/status` tells you whether it is up.
-- Works with Super Fast Mode on or off, like on-device streaming. No model has to
-  be downloaded on the Mac, but the model selected under Transcription Model is the fallback:
-  if the server is unreachable or busy, the recording is transcribed with it and
-  pasted once.
-- One recording at a time per server, five minutes per recording. If the server
-  drops out after text has already been pasted, dictation stops there — nothing
-  is retracted and the rest is not replayed.
 
 #### Build troubleshooting
 
