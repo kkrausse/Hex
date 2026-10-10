@@ -29,6 +29,10 @@ struct TranscriptionFeature {
     /// recording still works but cannot stream, so the indicator says so rather
     /// than leaving the user to guess why no text is appearing.
     var isStreamingModelLoading: Bool = false
+    /// Set when a session against the dictation server did not run to the end,
+    /// and cleared a few seconds later. Drives an indicator notice, since the
+    /// user otherwise cannot tell why this dictation behaved differently.
+    var remoteDictationIssue: RemoteDictationIssue?
     var error: String?
     var recordingStartTime: Date?
     var meter: Meter = .init(averagePower: 0, peakPower: 0)
@@ -38,6 +42,16 @@ struct TranscriptionFeature {
     @Shared(.isRemappingScratchpadFocused) var isRemappingScratchpadFocused: Bool = false
     @Shared(.modelBootstrapState) var modelBootstrapState: ModelBootstrapState
     @Shared(.transcriptionHistory) var transcriptionHistory: TranscriptionHistory
+  }
+
+  enum RemoteDictationIssue: Equatable, Sendable {
+    /// The server never produced text, so the clip is being (or was)
+    /// transcribed on this Mac instead. Nothing was lost.
+    case fellBack
+    /// The server failed and the recording could not be recovered: either text
+    /// had already been inserted (it stays; the rest was not transcribed), or
+    /// there is no on-device model to transcribe the clip with.
+    case failed
   }
 
   enum Action {
@@ -69,6 +83,9 @@ struct TranscriptionFeature {
     case streamingSessionUnavailable(modelNotReady: Bool)
     /// A streaming session ended. The text is already in the user's document.
     case streamingResult(String, URL?, TimeInterval)
+    /// A session against the dictation server failed; the string is why.
+    case remoteDictationFailed(RemoteDictationIssue, String)
+    case remoteDictationIssueCleared
 
     // Model availability
     case modelMissing
@@ -81,6 +98,7 @@ struct TranscriptionFeature {
     case transcription
     case sampleForwarding
     case streamingPrewarm
+    case remoteDictationNotice
   }
 
   @Dependency(\.transcription) var transcription
@@ -162,6 +180,21 @@ struct TranscriptionFeature {
 
       case let .streamingResult(text, audioURL, duration):
         return handleStreamingResult(&state, text: text, audioURL: audioURL, duration: duration)
+
+      case let .remoteDictationFailed(issue, message):
+        state.remoteDictationIssue = issue
+        if issue == .failed {
+          state.error = message
+        }
+        return .run { send in
+          try await Task.sleep(for: .seconds(6))
+          await send(.remoteDictationIssueCleared)
+        }
+        .cancellable(id: CancelID.remoteDictationNotice, cancelInFlight: true)
+
+      case .remoteDictationIssueCleared:
+        state.remoteDictationIssue = nil
+        return .none
 
       case .modelMissing:
         return .none
@@ -345,13 +378,34 @@ private extension TranscriptionFeature {
 
 private extension TranscriptionFeature {
   func handleStartRecording(_ state: inout State) -> Effect<Action> {
-    guard state.modelBootstrapState.isModelReady else {
+    // Live streaming needs the capture engine's sample tap, which only exists in
+    // super fast mode. With it off the recording still happens — it just takes
+    // the batch path at the end, exactly as it does for any non-streaming model.
+    //
+    // The dictation server, when enabled, takes precedence over an on-device
+    // streaming model: the selected model is then only what a failed session
+    // falls back to.
+    let model = state.hexSettings.selectedModel
+    let superFast = state.hexSettings.superFastModeEnabled
+    let backend: StreamingDictationBackend?
+    if let url = state.hexSettings.remoteDictationStreamURL, superFast {
+      backend = .remote(url)
+    } else if StreamingModel.isStreaming(model), superFast {
+      backend = .onDevice(modelName: model)
+    } else {
+      backend = nil
+    }
+
+    // A remote session needs no model on this Mac, so a missing one must not
+    // block the recording. It only costs the fallback if the server fails.
+    guard state.modelBootstrapState.isModelReady || backend?.isRemote == true else {
       return .merge(
         .send(.modelMissing),
         .run { _ in soundEffect.play(.cancel) }
       )
     }
     state.isRecording = true
+    state.remoteDictationIssue = nil
     let startTime = now
     state.recordingStartTime = startTime
     
@@ -362,23 +416,21 @@ private extension TranscriptionFeature {
     }
     transcriptionFeatureLogger.notice("Recording started at \(startTime.ISO8601Format())")
 
-    // Live streaming needs the capture engine's sample tap, which only exists in
-    // super fast mode. With it off the recording still happens — it just takes
-    // the batch path at the end, exactly as it does for any non-streaming model.
-    let model = state.hexSettings.selectedModel
-    let wantsStreaming = StreamingModel.isStreaming(model) && state.hexSettings.superFastModeEnabled
-    if StreamingModel.isStreaming(model), !state.hexSettings.superFastModeEnabled {
+    if backend == nil, !superFast,
+       StreamingModel.isStreaming(model) || state.hexSettings.remoteDictationStreamURL != nil
+    {
       transcriptionFeatureLogger.notice(
-        "Streaming model selected but super fast mode is off; using the batch path for this recording"
+        "Live dictation selected but super fast mode is off; using the batch path for this recording"
       )
     }
-    state.isStreamingSession = wantsStreaming
+    state.isStreamingSession = backend != nil
     let transformStack = streamingTransformStack(&state)
     let keepTranscriptOnClipboard = state.hexSettings.copyToClipboard
 
     // Prevent system sleep during recording
     return .merge(
       .cancel(id: CancelID.recordingCleanup),
+      .cancel(id: CancelID.remoteDictationNotice),
       .run { [sleepManagement, preventSleep = state.hexSettings.preventSystemSleep] send in
         // Play sound immediately for instant feedback
         soundEffect.play(.startRecording)
@@ -393,9 +445,9 @@ private extension TranscriptionFeature {
           return
         }
         // Opened before the recorder so no captured buffer predates the session.
-        if wantsStreaming {
+        if let backend {
           do {
-            try await streamingDictation.start(model, transformStack, keepTranscriptOnClipboard)
+            try await streamingDictation.start(backend, transformStack, keepTranscriptOnClipboard)
           } catch {
             let modelNotReady: Bool
             if case StreamingDictationError.modelNotReady = error {
@@ -463,7 +515,7 @@ private extension TranscriptionFeature {
     }
 
     let model = state.hexSettings.selectedModel
-    guard !model.isEmpty else {
+    guard !model.isEmpty || state.isStreamingSession else {
       // Defense-in-depth: handleStartRecording already blocks recording when the
       // bootstrap state says no model is ready, but settings can change while a
       // recording is in flight (or the in-memory bootstrap default can race a
@@ -514,6 +566,47 @@ private extension TranscriptionFeature {
           transcriptionFeatureLogger.notice(
             "Streaming session inserted \(result.insertedText.count) characters over \(String(format: "%.2f", duration))s"
           )
+          if let failure = result.failure {
+            if result.insertedText.isEmpty, let capturedURL {
+              // Nothing reached the document, so nothing can be duplicated:
+              // this is the cold-model case again, and the clip goes through
+              // the batch path with the selected on-device model. Only a model
+              // already on disk — `transcribe` would otherwise start a silent
+              // download with the user waiting on it.
+              transcriptionFeatureLogger.notice(
+                "Dictation server produced no text (\(failure, privacy: .public)); transcribing the clip on-device instead"
+              )
+              guard !model.isEmpty, await transcription.isModelDownloaded(model) else {
+                let error = RemoteDictationFallbackError.noLocalModel(failure)
+                soundEffect.play(.cancel)
+                await send(.remoteDictationFailed(.failed, error.localizedDescription))
+                await send(.transcriptionError(error, capturedURL))
+                return
+              }
+              await send(.remoteDictationFailed(.fellBack, failure))
+              do {
+                let decodeOptions = DecodingOptions(
+                  language: language,
+                  detectLanguage: language == nil,
+                  chunkingStrategy: .vad,
+                )
+                let text = try await transcription.transcribe(capturedURL, model, decodeOptions) { _ in }
+                await send(.transcriptionResult(text, capturedURL, duration))
+              } catch {
+                transcriptionFeatureLogger.error("On-device fallback failed: \(error.localizedDescription)")
+                await send(.transcriptionError(error, capturedURL))
+              }
+              return
+            }
+            // Text is already in the document. Transcribing the clip again
+            // would insert it twice, and what landed cannot be retracted — so
+            // this stops here and says so. No replay.
+            transcriptionFeatureLogger.error(
+              "Dictation server failed after \(result.insertedText.count) characters were inserted: \(failure, privacy: .public)"
+            )
+            soundEffect.play(.cancel)
+            await send(.remoteDictationFailed(.failed, failure))
+          }
           await send(.streamingResult(result.insertedText, capturedURL, duration))
         }
         .cancellable(id: CancelID.transcription)
@@ -895,7 +988,14 @@ struct TranscriptionView: View {
   @ObserveInjection var inject
 
   var status: TranscriptionIndicatorView.Status {
-    if store.isTranscribing {
+    if let issue = store.remoteDictationIssue, !store.isRecording {
+      // Ahead of `transcribing`: the on-device fallback is a transcription, and
+      // the point is to say why this one is not live.
+      switch issue {
+      case .fellBack: return .remoteFallback
+      case .failed: return .remoteFailed
+      }
+    } else if store.isTranscribing {
       return .transcribing
     } else if store.isRecording {
       return .recording
@@ -919,6 +1019,18 @@ struct TranscriptionView: View {
       await store.send(.task).finish()
     }
     .enableInjection()
+  }
+}
+
+/// Why a recording the dictation server dropped could not be recovered here.
+enum RemoteDictationFallbackError: LocalizedError {
+  case noLocalModel(String)
+
+  var errorDescription: String? {
+    switch self {
+    case let .noLocalModel(reason):
+      return "\(reason) No on-device model is downloaded to transcribe the recording instead."
+    }
   }
 }
 

@@ -21,6 +21,11 @@ struct TranscriptionIndicatorView: View {
     /// The streaming encoder is compiling. Recording works, but cannot insert
     /// text live until this finishes, so it is worth saying out loud.
     case loadingModel
+    /// The dictation server produced nothing, so this recording is being
+    /// transcribed on-device and pasted once instead of appearing live.
+    case remoteFallback
+    /// The dictation server failed and the recording could not be recovered.
+    case remoteFailed
   }
 
   var status: Status
@@ -34,7 +39,8 @@ struct TranscriptionIndicatorView: View {
     case .recording:
       return mixedColor(mixedNSColor(.red, with: .black, by: 0.5), with: .red, by: meter.averagePower * 3)
     case .transcribing: return mixedColor(.blue, with: .black, by: 0.5)
-    case .prewarming, .loadingModel: return mixedColor(.blue, with: .black, by: 0.5)
+    case .prewarming, .loadingModel, .remoteFallback: return mixedColor(.blue, with: .black, by: 0.5)
+    case .remoteFailed: return mixedColor(.orange, with: .black, by: 0.5)
     }
   }
 
@@ -44,7 +50,8 @@ struct TranscriptionIndicatorView: View {
     case .optionKeyPressed: return Color.black
     case .recording: return mixedColor(.red, with: .white, by: 0.1).opacity(0.6)
     case .transcribing: return mixedColor(.blue, with: .white, by: 0.1).opacity(0.6)
-    case .prewarming, .loadingModel: return mixedColor(.blue, with: .white, by: 0.1).opacity(0.6)
+    case .prewarming, .loadingModel, .remoteFallback: return mixedColor(.blue, with: .white, by: 0.1).opacity(0.6)
+    case .remoteFailed: return mixedColor(.orange, with: .white, by: 0.1).opacity(0.6)
     }
   }
 
@@ -63,7 +70,8 @@ struct TranscriptionIndicatorView: View {
     case .optionKeyPressed: return Color.clear
     case .recording: return Color.red
     case .transcribing: return transcribeBaseColor
-    case .prewarming, .loadingModel: return transcribeBaseColor
+    case .prewarming, .loadingModel, .remoteFallback: return transcribeBaseColor
+    case .remoteFailed: return .orange
     }
   }
 
@@ -81,6 +89,8 @@ struct TranscriptionIndicatorView: View {
     // Named for what the user gets, not for what is happening internally: the
     // point of showing this is that dictation will not appear as you speak yet.
     case .loadingModel: return "Loading live dictation…"
+    case .remoteFallback: return "Server unavailable — transcribing on this Mac"
+    case .remoteFailed: return "Dictation server failed — dictation stopped"
     case .hidden, .optionKeyPressed, .recording, .transcribing: return nil
     }
   }
@@ -184,6 +194,8 @@ struct TranscriptionIndicatorView: View {
     TranscriptionIndicatorView(status: .transcribing, meter: .init(averagePower: 0, peakPower: 0))
     TranscriptionIndicatorView(status: .prewarming, meter: .init(averagePower: 0, peakPower: 0))
     TranscriptionIndicatorView(status: .loadingModel, meter: .init(averagePower: 0, peakPower: 0))
+    TranscriptionIndicatorView(status: .remoteFallback, meter: .init(averagePower: 0, peakPower: 0))
+    TranscriptionIndicatorView(status: .remoteFailed, meter: .init(averagePower: 0, peakPower: 0))
   }
   .padding(40)
 }

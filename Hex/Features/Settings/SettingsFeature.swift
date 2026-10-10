@@ -76,6 +76,8 @@ struct SettingsFeature {
     case togglePreventSystemSleep(Bool)
     case setRecordingAudioBehavior(RecordingAudioBehavior)
     case toggleSuperFastMode(Bool)
+    case setRemoteDictationEnabled(Bool)
+    case setRemoteDictationURL(String)
     case setUseClipboardPaste(Bool)
     case setCopyToClipboard(Bool)
     case setDoubleTapLockEnabled(Bool)
@@ -476,6 +478,14 @@ struct SettingsFeature {
         return .run { _ in
           await recording.warmUpRecorder()
         }
+
+      case let .setRemoteDictationEnabled(enabled):
+        state.$hexSettings.withLock { $0.remoteDictationEnabled = enabled }
+        return .none
+
+      case let .setRemoteDictationURL(url):
+        state.$hexSettings.withLock { $0.remoteDictationURL = url }
+        return .none
 
       case let .setDoubleTapLockEnabled(enabled):
         state.$hexSettings.withLock {

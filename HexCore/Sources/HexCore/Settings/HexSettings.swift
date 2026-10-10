@@ -51,6 +51,11 @@ public struct HexSettings: Codable, Equatable, Sendable {
 	public var lowercaseTranscripts: Bool
 	public var removePunctuation: Bool
 	public var lowercaseFirstLetter: Bool
+	/// Fork addition: run live dictation against a dictation server instead of
+	/// the on-device streaming model. See `RemoteDictationEndpoint`.
+	public var remoteDictationEnabled: Bool
+	/// The server's origin as the user typed it, e.g. `https://host:9876`.
+	public var remoteDictationURL: String
 
 	private mutating func normalizeDoubleTapSettings() {
 		if !doubleTapLockEnabled {
@@ -86,7 +91,9 @@ public struct HexSettings: Codable, Equatable, Sendable {
 		wordRemappings: [WordRemapping] = [],
 		lowercaseTranscripts: Bool = false,
 		removePunctuation: Bool = false,
-		lowercaseFirstLetter: Bool = false
+		lowercaseFirstLetter: Bool = false,
+		remoteDictationEnabled: Bool = false,
+		remoteDictationURL: String = ""
 	) {
 		self.soundEffectsEnabled = soundEffectsEnabled
 		self.soundEffectsVolume = soundEffectsVolume
@@ -116,6 +123,8 @@ public struct HexSettings: Codable, Equatable, Sendable {
 		self.lowercaseTranscripts = lowercaseTranscripts
 		self.removePunctuation = removePunctuation
 		self.lowercaseFirstLetter = lowercaseFirstLetter
+		self.remoteDictationEnabled = remoteDictationEnabled
+		self.remoteDictationURL = remoteDictationURL
 		normalizeDoubleTapSettings()
 	}
 
@@ -168,6 +177,8 @@ private enum HexSettingKey: String, CodingKey, CaseIterable {
 	case lowercaseTranscripts
 	case removePunctuation
 	case lowercaseFirstLetter
+	case remoteDictationEnabled
+	case remoteDictationURL
 }
 
 private struct SettingsField<Value: Codable & Sendable> {
@@ -304,6 +315,8 @@ private enum HexSettingsSchema {
 		).eraseToAny(),
 		SettingsField(.lowercaseTranscripts, keyPath: \.lowercaseTranscripts, default: defaults.lowercaseTranscripts).eraseToAny(),
 		SettingsField(.removePunctuation, keyPath: \.removePunctuation, default: defaults.removePunctuation).eraseToAny(),
-		SettingsField(.lowercaseFirstLetter, keyPath: \.lowercaseFirstLetter, default: defaults.lowercaseFirstLetter).eraseToAny()
+		SettingsField(.lowercaseFirstLetter, keyPath: \.lowercaseFirstLetter, default: defaults.lowercaseFirstLetter).eraseToAny(),
+		SettingsField(.remoteDictationEnabled, keyPath: \.remoteDictationEnabled, default: defaults.remoteDictationEnabled).eraseToAny(),
+		SettingsField(.remoteDictationURL, keyPath: \.remoteDictationURL, default: defaults.remoteDictationURL).eraseToAny()
 	]
 }

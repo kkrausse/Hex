@@ -17,6 +17,23 @@ enum StreamingDictationError: LocalizedError {
 	}
 }
 
+/// Which recognizer a live session runs against.
+///
+/// Everything downstream of the recognizer — the transcript pipeline, the
+/// transforms, the inserter — is the same for both; only where the samples go
+/// and where the cumulative partials come from differs.
+enum StreamingDictationBackend: Equatable, Sendable {
+	/// FluidAudio's on-device decoder, by `StreamingModel` raw value.
+	case onDevice(modelName: String)
+	/// A dictation server's stream endpoint. See `RemoteStreamingClient`.
+	case remote(URL)
+
+	var isRemote: Bool {
+		if case .remote = self { return true }
+		return false
+	}
+}
+
 /// What a finished (or cancelled) streaming session actually put on screen.
 struct StreamingDictationResult: Equatable, Sendable {
 	/// The text this session inserted into the focused application, in order.
@@ -26,6 +43,11 @@ struct StreamingDictationResult: Equatable, Sendable {
 	/// The recognizer's own final transcript, before Hex's transforms. Empty for
 	/// a cancelled session, which never asks the recognizer to finish.
 	var rawTranscript: String
+	/// Set when the recognizer gave up before delivering a final transcript —
+	/// only the remote backend can, since a server can vanish mid-sentence.
+	/// `insertedText` is then whatever landed before that, possibly nothing, and
+	/// the caller decides between transcribing the clip again and reporting it.
+	var failure: String? = nil
 }
 
 /// Drives live dictation: recognizer session in, text in the user's document out.
@@ -46,8 +68,12 @@ struct StreamingDictationClient {
 	/// Opens a session. Throws if the model is not on disk or cannot be loaded,
 	/// in which case the caller should fall back to the batch path — which knows
 	/// how to download a missing model with a progress UI.
+	///
+	/// A remote session never throws here: it connects in the background so the
+	/// microphone is not kept waiting, and reports an unreachable server through
+	/// `StreamingDictationResult.failure` when the session is finished.
 	var start: @Sendable (
-		_ modelName: String,
+		_ backend: StreamingDictationBackend,
 		_ transform: TranscriptTransformStack,
 		_ keepTranscriptOnClipboard: Bool
 	) async throws -> Void
@@ -73,7 +99,7 @@ extension StreamingDictationClient: DependencyKey {
 		let live = StreamingDictationLive()
 		return Self(
 			prewarm: { await live.prewarm(modelName: $0) },
-			start: { try await live.start(modelName: $0, transform: $1, keepTranscriptOnClipboard: $2) },
+			start: { try await live.start(backend: $0, transform: $1, keepTranscriptOnClipboard: $2) },
 			consumeSamples: { await live.consumeSamples($0) },
 			finish: { await live.finish() },
 			cancel: { await live.cancel() },
@@ -99,6 +125,7 @@ actor StreamingDictationLive {
 		/// False when the fragments were typed through `PasteboardClient`, in which
 		/// case the clipboard inserter was never opened and must not be closed.
 		let usedClipboard: Bool
+		let isRemote: Bool
 	}
 
 	private enum Update: Sendable {
@@ -107,6 +134,7 @@ actor StreamingDictationLive {
 	}
 
 	private let asr = StreamingParakeetClient.shared
+	private let remote = RemoteStreamingClient()
 	private let inserter = IncrementalTextInserter()
 	@Dependency(\.pasteboard) private var pasteboard
 	@Shared(.hexSettings) private var hexSettings: HexSettings
@@ -141,7 +169,7 @@ actor StreamingDictationLive {
 
 
 	func start(
-		modelName: String,
+		backend: StreamingDictationBackend,
 		transform: TranscriptTransformStack,
 		keepTranscriptOnClipboard: Bool
 	) async throws {
@@ -157,13 +185,25 @@ actor StreamingDictationLive {
 		// still records and transcribes through the batch path.
 		// The caller reacts to this by kicking off a prewarm, so the next
 		// recording streams and the indicator can say why this one did not.
-		guard await asr.isLoaded(modelName) else {
-			throw StreamingDictationError.modelNotReady(modelName)
+		if case let .onDevice(modelName) = backend {
+			guard await asr.isLoaded(modelName) else {
+				throw StreamingDictationError.modelNotReady(modelName)
+			}
 		}
 
 		let (updates, continuation) = AsyncStream<Update>.makeStream(bufferingPolicy: .unbounded)
-		try await asr.startSession(modelName: modelName) { cumulative in
-			continuation.yield(.partial(cumulative))
+		switch backend {
+		case let .onDevice(modelName):
+			try await asr.startSession(modelName: modelName) { cumulative in
+				continuation.yield(.partial(cumulative))
+			}
+		case let .remote(url):
+			// Same rule as above, for the same reason: this does not wait for
+			// the connection. Samples queue inside the client until the server
+			// is ready, and a server that never is surfaces in `finish`.
+			await remote.startSession(url: url) { cumulative in
+				continuation.yield(.partial(cumulative))
+			}
 		}
 
 		sawEndOfUtterance = false
@@ -210,16 +250,21 @@ actor StreamingDictationLive {
 			continuation: continuation,
 			consumer: consumer,
 			keepTranscriptOnClipboard: keepTranscriptOnClipboard,
-			usedClipboard: useClipboardPaste
+			usedClipboard: useClipboardPaste,
+			isRemote: backend.isRemote
 		)
-		dictationLogger.notice("Streaming dictation session started model=\(modelName)")
+		dictationLogger.notice("Streaming dictation session started backend=\(String(describing: backend), privacy: .public)")
 	}
 
 	func consumeSamples(_ samples: AsyncStream<[Float]>) async {
 		for await buffer in samples {
-			guard session != nil else { continue }
+			guard let session else { continue }
 			guard !buffer.isEmpty else {
 				sawEndOfUtterance = true
+				continue
+			}
+			if session.isRemote {
+				await remote.append(buffer)
 				continue
 			}
 			do {
@@ -253,16 +298,26 @@ actor StreamingDictationLive {
 		self.session = nil
 
 		var rawTranscript = ""
+		var failure: String?
 		do {
-			rawTranscript = try await asr.finishSession()
+			rawTranscript = session.isRemote
+				? try await remote.finishSession()
+				: try await asr.finishSession()
 		} catch {
 			dictationLogger.error("Streaming finish failed: \(error.localizedDescription)")
+			if session.isRemote { failure = error.localizedDescription }
 		}
 
 		// Ordering: the final transcript goes through the same stream as every
 		// partial, so the consumer sees it strictly after them and the flushed
 		// tail lands after the last word rather than racing it.
-		session.continuation.yield(.final(rawTranscript))
+		//
+		// A failed remote session has no final. Flushing an empty one would
+		// release the held-back partial word, and "stop inserting" is the whole
+		// contract once the server is gone — so the stream just ends.
+		if failure == nil {
+			session.continuation.yield(.final(rawTranscript))
+		}
 		session.continuation.finish()
 		let insertedText = await session.consumer.value
 
@@ -270,7 +325,7 @@ actor StreamingDictationLive {
 			await inserter.end(leaving: session.keepTranscriptOnClipboard ? insertedText : nil)
 		}
 		dictationLogger.notice("Streaming dictation session finished, inserted \(insertedText.count) characters")
-		return .init(insertedText: insertedText, rawTranscript: rawTranscript)
+		return .init(insertedText: insertedText, rawTranscript: rawTranscript, failure: failure)
 	}
 
 	func cancel() async -> StreamingDictationResult {
@@ -280,7 +335,11 @@ actor StreamingDictationLive {
 		// No `.final`: cancelling must not insert the held-back partial word.
 		session.continuation.finish()
 		let insertedText = await session.consumer.value
-		await asr.cancelSession()
+		if session.isRemote {
+			await remote.cancelSession()
+		} else {
+			await asr.cancelSession()
+		}
 		if session.usedClipboard {
 			await inserter.end(leaving: session.keepTranscriptOnClipboard ? insertedText : nil)
 		}
