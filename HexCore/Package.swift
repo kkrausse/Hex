@@ -8,7 +8,7 @@ let package = Package(
         .library(name: "HexCore", targets: ["HexCore"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/Clipy/Sauce", branch: "master"),
+        .package(url: "https://github.com/Clipy/Sauce", revision: "9c0de6c233f29d892e86dda68c2dd791aa10670c"),
         .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.11.0"),
         .package(url: "https://github.com/apple/swift-log", from: "1.9.1"),
     ],

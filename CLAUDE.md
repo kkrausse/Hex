@@ -48,8 +48,9 @@ In: streaming via `parakeetUnified1120ms` (hardcoded), delta paste, remappings t
 `StreamingTextTransformer`, Sparkle off. Out: settings UI, latency-tier picker,
 streaming on/off toggle, multi-word remapping lookahead. **The batch path stays fully
 intact** — streaming is added beside it, never replacing it, so upstream merges stay
-cheap. Streaming also requires super fast mode, since that is the only path with a
-sample tap; with it off a streaming model silently falls back to batch.
+cheap. Streaming works with super fast mode on or off — the sample tap runs on the
+capture-engine path either way. Super fast only improves first-word latency
+via the warm engine and pre-roll buffer.
 
 ### Watching what the app is doing
 

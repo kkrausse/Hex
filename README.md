@@ -25,10 +25,28 @@ path is not finished yet, so it still pastes once at the end. See
 Auto-update is disabled on purpose. Left enabled, this build would update itself
 back to an upstream release and silently discard the fork.
 
-### Running it
+### Build and run
 
-No Xcode required — this fork adds a `Package.swift` that builds the app as a
-plain SPM executable, alongside the untouched `Hex.xcodeproj`.
+This fork adds a `Package.swift` that builds the app as a plain SPM executable,
+alongside the untouched `Hex.xcodeproj`. It requires Swift 6.1 or newer.
+Xcode 16.2 includes Swift 6.0.3, which is too old for the pinned Composable
+Architecture dependency.
+
+If `swift --version` reports an older version, install the standalone toolchain
+with [Swiftly](https://github.com/swiftlang/swiftly). This is much smaller than
+installing a new Xcode release:
+
+```bash
+brew install swiftly
+swiftly init
+. "$HOME/.swiftly/env.sh"
+swiftly install 6.3.3
+swiftly use 6.3.3
+swift --version
+```
+
+The repository's `.swift-version` selects Swift 6.3.3 for Swiftly users. It
+does not replace the installed macOS SDK.
 
 ```bash
 swift build              # ~30s incremental, a few minutes cold
@@ -49,6 +67,33 @@ signing identity would avoid that.
 
 > `swift run HexApp` also works, but swallows the app's stdout logging — prefer
 > launching the binary directly.
+
+#### Build troubleshooting
+
+- Sauce is pinned to revision `9c0de6c233f29d892e86dda68c2dd791aa10670c` in
+  both package manifests. Do not switch it back to `master`: its current
+  `Package.swift` has an invalid trailing comma and cannot be resolved.
+- If SwiftPM stays at `[1/41919] Fetching fluidaudio` for more than a few
+  minutes, cancel it. GitHub is available, but SwiftPM's full Git fetch can
+  stall. Downloading the exact source archive succeeds quickly:
+
+  ```bash
+  mkdir -p .build/local-dependencies
+  curl --fail --location --output .build/local-dependencies/FluidAudio.zip \
+    https://github.com/FluidInference/FluidAudio/archive/19600a485baa4998812e4654b70d2bab8f2c9949.zip
+  ditto -x -k .build/local-dependencies/FluidAudio.zip .build/local-dependencies
+  ln -s FluidAudio-19600a485baa4998812e4654b70d2bab8f2c9949 .build/local-dependencies/FluidAudio
+  ```
+
+  Then temporarily replace FluidAudio's URL dependency in `Package.swift` with:
+
+  ```swift
+  .package(path: ".build/local-dependencies/FluidAudio"),
+  ```
+
+- Cancelling a build can leave `swift-build` running and lock `.build`. Find
+  the PID with `pgrep -fl swift-build`, stop the stale process with `kill <PID>`,
+  then retry `swift build`.
 
 ### Tests
 
