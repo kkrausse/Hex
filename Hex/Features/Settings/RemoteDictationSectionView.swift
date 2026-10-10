@@ -45,12 +45,8 @@ struct RemoteDictationSectionView: View {
 				.textFieldStyle(.roundedBorder)
 				.autocorrectionDisabled()
 				.disabled(!store.hexSettings.remoteDictationEnabled)
-				if store.hexSettings.remoteDictationEnabled {
-					if !addressIsUsable {
-						Text("Enter the server's http(s) or ws(s) address to turn this on.")
-					} else if !store.hexSettings.superFastModeEnabled {
-						Text("Needs Super Fast Mode, which provides the live audio.")
-					}
+				if store.hexSettings.remoteDictationEnabled, !addressIsUsable {
+					Text("Enter the server's http(s) or ws(s) address to turn this on.")
 				}
 			} icon: {
 				Image(systemName: "network")

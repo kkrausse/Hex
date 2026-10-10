@@ -27,7 +27,7 @@ let package = Package(
     dependencies: [
         .package(path: "HexCore"),
         .package(url: "https://github.com/pointfreeco/swift-composable-architecture", from: "1.26.0"),
-        .package(url: "https://github.com/Clipy/Sauce", branch: "master"),
+        .package(url: "https://github.com/Clipy/Sauce", revision: "9c0de6c233f29d892e86dda68c2dd791aa10670c"),
         .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.14.1"),
         .package(url: "https://github.com/pointfreeco/swift-sharing", from: "2.9.1"),
         .package(url: "https://github.com/pointfreeco/swift-case-paths", from: "1.8.0"),

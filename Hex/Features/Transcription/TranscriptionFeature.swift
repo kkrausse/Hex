@@ -378,19 +378,19 @@ private extension TranscriptionFeature {
 
 private extension TranscriptionFeature {
   func handleStartRecording(_ state: inout State) -> Effect<Action> {
-    // Live streaming needs the capture engine's sample tap, which only exists in
-    // super fast mode. With it off the recording still happens — it just takes
-    // the batch path at the end, exactly as it does for any non-streaming model.
-    //
     // The dictation server, when enabled, takes precedence over an on-device
     // streaming model: the selected model is then only what a failed session
     // falls back to.
+    //
+    // Live streaming reads the capture engine's sample tap, which runs in both
+    // modes: standard just starts the engine cold with no pre-roll, so the
+    // first syllable can miss the live decoder. The batch path has that same
+    // hole, so there is no reason to gate streaming on the toggle.
     let model = state.hexSettings.selectedModel
-    let superFast = state.hexSettings.superFastModeEnabled
     let backend: StreamingDictationBackend?
-    if let url = state.hexSettings.remoteDictationStreamURL, superFast {
+    if let url = state.hexSettings.remoteDictationStreamURL {
       backend = .remote(url)
-    } else if StreamingModel.isStreaming(model), superFast {
+    } else if StreamingModel.isStreaming(model) {
       backend = .onDevice(modelName: model)
     } else {
       backend = nil
@@ -416,13 +416,6 @@ private extension TranscriptionFeature {
     }
     transcriptionFeatureLogger.notice("Recording started at \(startTime.ISO8601Format())")
 
-    if backend == nil, !superFast,
-       StreamingModel.isStreaming(model) || state.hexSettings.remoteDictationStreamURL != nil
-    {
-      transcriptionFeatureLogger.notice(
-        "Live dictation selected but super fast mode is off; using the batch path for this recording"
-      )
-    }
     state.isStreamingSession = backend != nil
     let transformStack = streamingTransformStack(&state)
     let keepTranscriptOnClipboard = state.hexSettings.copyToClipboard

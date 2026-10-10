@@ -1,5 +1,5 @@
 {
-  "originHash" : "af73c94cfba65e6e1ac876524df29c7efcfa81450414993e212fc19881e93724",
+  "originHash" : "370f5d51cb6896e6363a9cbec7dcf83f62d927882580a64ef4a5af6af2f385f6",
   "pins" : [
     {
       "identity" : "combine-schedulers",
@@ -50,8 +50,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Clipy/Sauce",
       "state" : {
-        "branch" : "master",
-        "revision" : "1fce89ccc9cbb091022c17ef8f9939901d4e951a"
+        "revision" : "9c0de6c233f29d892e86dda68c2dd791aa10670c"
       }
     },
     {
